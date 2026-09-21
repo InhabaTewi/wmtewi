@@ -147,3 +147,9 @@ The following is a planning inventory, not an implementation instruction execute
 ## M01 Boundary
 
 M01 should productionize the existing Core without changing its domain ownership: PostgreSQL remains the authority for Persona, Memory, Knowledge, sessions, and conversation records; providers remain replaceable execution dependencies. GPU Worker, training, QQ integration, media/avatar, OBS, and game functionality remain explicitly deferred.
+
+## M01-4 Retrieval Implementation Record
+
+Before M01-4, the actual retrieval chain was `KnowledgeService.search` or `KnowledgeService.asearch` -> `EmbeddingProvider.embed` or `EmbeddingProvider.aembed` -> `KnowledgeRepository.active_chunk_embeddings` -> load every active embedding -> Python cosine calculation -> descending sort -> top-k slice. The implementation preserves ingestion, normalized-content hashing, versioning, reindexing, and deletion semantics.
+
+M01-4 moves only the PostgreSQL branch to `KnowledgeRepository.search`: query embeddings are filtered by active document and `embedding_model`, then ordered by pgvector cosine distance (`embedding <=> query_vector`) with `LIMIT` in SQL. The returned public score remains similarity (`1 - cosine_distance`). SQLite retains the previous in-process cosine fallback with the same active-document and model filters.

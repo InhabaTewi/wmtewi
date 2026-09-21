@@ -18,6 +18,7 @@ class KnowledgeNotFoundError(Exception):
 
 
 class KnowledgeService:
+    MAX_SEARCH_LIMIT = 20
     def __init__(self, session: Session, embedding_provider: EmbeddingProvider) -> None:
         self.session = session
         self.embedding_provider = embedding_provider
@@ -98,27 +99,38 @@ class KnowledgeService:
         )
 
     def search(self, query: str, limit: int = 5) -> list[KnowledgeChunk]:
+        self._validate_limit(limit)
         query_vector = self.embedding_provider.embed([query])[0]
-        scored: list[KnowledgeChunk] = []
-        for chunk, embedding in self.repository.active_chunk_embeddings():
-            score = self._cosine(query_vector, embedding.embedding)
-            scored.append(
-                KnowledgeChunk(id=chunk.id, document_id=chunk.document_id, content=chunk.content, score=score)
-            )
-        return sorted(scored, key=lambda item: item.score or 0, reverse=True)[:limit]
+        return self._search(query_vector, limit)
 
     async def asearch(self, query: str, limit: int = 5) -> list[KnowledgeChunk]:
+        self._validate_limit(limit)
         query_vector = (await self.embedding_provider.aembed([query]))[0]
+        return self._search(query_vector, limit)
+
+    def _search(self, query_vector: list[float], limit: int) -> list[KnowledgeChunk]:
+        if self.repository.supports_vector_search:
+            return [
+                KnowledgeChunk(id=chunk.id, document_id=chunk.document_id, content=chunk.content, score=score)
+                for chunk, score in self.repository.search(query_vector, self.embedding_provider.model_id, limit)
+            ]
         return self._score(query_vector, limit)
 
     def _score(self, query_vector: list[float], limit: int) -> list[KnowledgeChunk]:
         scored: list[KnowledgeChunk] = []
         for chunk, embedding in self.repository.active_chunk_embeddings():
+            if embedding.embedding_model != self.embedding_provider.model_id:
+                continue
             score = self._cosine(query_vector, embedding.embedding)
             scored.append(
                 KnowledgeChunk(id=chunk.id, document_id=chunk.document_id, content=chunk.content, score=score)
             )
         return sorted(scored, key=lambda item: item.score or 0, reverse=True)[:limit]
+
+    @classmethod
+    def _validate_limit(cls, limit: int) -> None:
+        if not 0 < limit <= cls.MAX_SEARCH_LIMIT:
+            raise ValueError(f"limit must be between 1 and {cls.MAX_SEARCH_LIMIT}")
 
     def delete(self, document_id: UUID) -> None:
         document = self.repository.get_active(document_id)

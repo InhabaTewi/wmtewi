@@ -1,5 +1,7 @@
 from uuid import UUID
 
+import math
+
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -53,3 +55,25 @@ class KnowledgeRepository:
             .where(KnowledgeDocument.is_active.is_(True))
         )
         return list(self.session.execute(statement).all())
+
+    @property
+    def supports_vector_search(self) -> bool:
+        bind = self.session.get_bind()
+        return bind.dialect.name == "postgresql"
+
+    def search(self, query_embedding: list[float], model_id: str, limit: int) -> list[tuple[KnowledgeChunk, float]]:
+        if len(query_embedding) != 1536 or not all(math.isfinite(value) for value in query_embedding):
+            raise ValueError("query embedding must contain 1536 finite values")
+        distance = KnowledgeEmbedding.embedding.cosine_distance(query_embedding).label("distance")
+        statement = (
+            select(KnowledgeChunk, distance)
+            .join(KnowledgeEmbedding, KnowledgeEmbedding.chunk_id == KnowledgeChunk.id)
+            .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeChunk.document_id)
+            .where(
+                KnowledgeDocument.is_active.is_(True),
+                KnowledgeEmbedding.embedding_model == model_id,
+            )
+            .order_by(distance)
+            .limit(limit)
+        )
+        return [(chunk, 1.0 - float(distance)) for chunk, distance in self.session.execute(statement)]
