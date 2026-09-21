@@ -7,6 +7,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
 
+from packages.persistence.config import DEFAULT_EMBEDDING_DIMENSION
+
 
 class Base(DeclarativeBase):
     pass
@@ -101,7 +103,9 @@ class KnowledgeEmbedding(Base):
     __tablename__ = "knowledge_embeddings"
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     chunk_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("knowledge_chunks.id"), unique=True)
-    embedding: Mapped[list[float]] = mapped_column(Vector(1536).with_variant(JSON, "sqlite"))
+    embedding: Mapped[list[float]] = mapped_column(
+        Vector(DEFAULT_EMBEDDING_DIMENSION).with_variant(JSON, "sqlite")
+    )
     embedding_model: Mapped[str] = mapped_column(String(256))
 
 

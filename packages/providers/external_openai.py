@@ -1,7 +1,7 @@
 import json
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from packages.providers.base import ProviderUnavailableError
 
@@ -13,13 +13,16 @@ class ExternalOpenAIProvider:
         self,
         *,
         base_url: str | None,
-        api_key: str | None,
+        api_key: SecretStr | str | None,
         model_id: str,
+        connect_timeout: float = 10.0,
+        read_timeout: float = 60.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/") if base_url else None
-        self.api_key = api_key
+        self.api_key = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
         self.model_id = model_id
+        self.timeout = httpx.Timeout(connect=connect_timeout, read=read_timeout, write=read_timeout, pool=connect_timeout)
         self.transport = transport
 
     async def health(self) -> bool:
@@ -46,7 +49,7 @@ class ExternalOpenAIProvider:
             },
         }
         try:
-            async with httpx.AsyncClient(timeout=60, transport=self.transport) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
                 response = await client.post(
                     f"{self.base_url}/chat/completions", headers=headers, json=payload
                 )

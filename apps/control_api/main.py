@@ -3,14 +3,12 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
-from apps.control_api.dependencies import get_session
+from apps.control_api.dependencies import get_knowledge_service, get_provider_router, get_session
 from packages.chat.service import ChatService
-from packages.knowledge.embedding import ExternalOpenAIEmbeddingProvider
 from packages.knowledge.service import KnowledgeNotFoundError, KnowledgeService
 from packages.memory.service import MemoryNotFoundError, MemoryService
 from packages.persona.repository import PersonaRepository
-from packages.persistence.config import settings
-from packages.providers import ExternalOpenAIProvider, ProviderRouter, ProviderUnavailableError
+from packages.providers import ProviderRouter, ProviderUnavailableError
 from packages.schemas.chat import ChatRequest, ChatResult
 from packages.schemas.knowledge import KnowledgeDocumentCreate, KnowledgeDocumentRead, KnowledgeSearchResponse
 from packages.schemas.memory import (
@@ -22,27 +20,6 @@ from packages.schemas.memory import (
 from packages.schemas.persona import PersonaVersionRead
 
 app = FastAPI(title="Inaba AI Control API", version="0.1.0")
-
-
-def get_provider_router() -> ProviderRouter:
-    return ProviderRouter(
-        external=ExternalOpenAIProvider(
-            base_url=settings.external_llm_base_url,
-            api_key=settings.external_llm_api_key,
-            model_id=settings.external_llm_model,
-        )
-    )
-
-
-def get_knowledge_service(session: Session = Depends(get_session)) -> KnowledgeService:
-    return KnowledgeService(
-        session,
-        ExternalOpenAIEmbeddingProvider(
-            base_url=settings.external_llm_base_url,
-            api_key=settings.external_llm_api_key,
-            model_id=settings.embedding_model,
-        ),
-    )
 
 
 @app.get("/health")

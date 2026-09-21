@@ -4,6 +4,10 @@ from typing import Protocol
 
 import httpx
 
+from pydantic import SecretStr
+
+from packages.persistence.config import DEFAULT_EMBEDDING_DIMENSION
+
 
 class EmbeddingProviderUnavailableError(RuntimeError):
     pass
@@ -16,10 +20,18 @@ class EmbeddingProvider(Protocol):
 
 
 class ExternalOpenAIEmbeddingProvider:
-    def __init__(self, *, base_url: str | None, api_key: str | None, model_id: str) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str | None,
+        api_key: SecretStr | str | None,
+        model_id: str,
+        dimension: int = DEFAULT_EMBEDDING_DIMENSION,
+    ) -> None:
         self.base_url = base_url.rstrip("/") if base_url else None
-        self.api_key = api_key
+        self.api_key = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
         self.model_id = model_id
+        self.dimension = dimension
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if self.base_url is None or self.api_key is None:
@@ -35,7 +47,7 @@ class ExternalOpenAIEmbeddingProvider:
         except httpx.HTTPError as exc:
             raise EmbeddingProviderUnavailableError("Embedding request failed") from exc
         vectors = [item["embedding"] for item in response.json()["data"]]
-        if any(len(vector) != 1536 for vector in vectors):
+        if any(len(vector) != self.dimension for vector in vectors):
             raise EmbeddingProviderUnavailableError("Embedding provider returned an unexpected vector size")
         return vectors
 
@@ -45,10 +57,13 @@ class HashEmbeddingProvider:
 
     model_id = "hash-embedding-test"
 
+    def __init__(self, dimension: int = DEFAULT_EMBEDDING_DIMENSION) -> None:
+        self.dimension = dimension
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
         for text in texts:
-            vector = [0.0] * 1536
+            vector = [0.0] * self.dimension
             for token in text.lower().split():
                 index = int.from_bytes(hashlib.sha256(token.encode()).digest()[:4], "big") % len(vector)
                 vector[index] += 1.0
