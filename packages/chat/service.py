@@ -37,7 +37,7 @@ class ChatService:
             metadata=request.metadata,
         )
         route = await self.router.select()
-        knowledge_chunks = self.knowledge_service.search(event.text) if self.knowledge_service else []
+        knowledge_chunks = await self.knowledge_service.asearch(event.text) if self.knowledge_service else []
         context = ContextBuilder(self.session).build(
             event,
             route.runtime_mode,

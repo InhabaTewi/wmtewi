@@ -1,4 +1,4 @@
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
 
 from fastapi import Depends
 from sqlalchemy import create_engine
@@ -38,7 +38,7 @@ def get_session() -> Generator[Session, None, None]:
         yield session
 
 
-def get_provider_router() -> ProviderRouter:
+def create_provider_router() -> ProviderRouter:
     return ProviderRouter(
         external=ExternalOpenAIProvider(
             base_url=settings.llm_base_url,
@@ -46,11 +46,20 @@ def get_provider_router() -> ProviderRouter:
             model_id=settings.llm_model,
             connect_timeout=settings.llm_connect_timeout,
             read_timeout=settings.llm_read_timeout,
+            max_retries=settings.llm_max_retries,
         )
     )
 
 
-def get_knowledge_service(session: Session = Depends(get_session)) -> KnowledgeService:
+async def get_provider_router() -> AsyncGenerator[ProviderRouter, None]:
+    router = create_provider_router()
+    try:
+        yield router
+    finally:
+        await router.external.aclose()
+
+
+def create_knowledge_service(session: Session) -> KnowledgeService:
     return KnowledgeService(
         session,
         ExternalOpenAIEmbeddingProvider(
@@ -58,5 +67,18 @@ def get_knowledge_service(session: Session = Depends(get_session)) -> KnowledgeS
             api_key=settings.embedding_api_key,
             model_id=settings.embedding_model,
             dimension=settings.embedding_dimension,
+            connect_timeout=settings.embedding_connect_timeout,
+            read_timeout=settings.embedding_read_timeout,
+            max_retries=settings.embedding_max_retries,
         ),
     )
+
+
+async def get_knowledge_service(
+    session: Session = Depends(get_session),
+) -> AsyncGenerator[KnowledgeService, None]:
+    knowledge = create_knowledge_service(session)
+    try:
+        yield knowledge
+    finally:
+        await knowledge.embedding_provider.aclose()

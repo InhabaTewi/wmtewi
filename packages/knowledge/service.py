@@ -51,6 +51,34 @@ class KnowledgeService:
         self.session.flush()
         return self._to_document_dto(document)
 
+    async def aingest(self, request: KnowledgeDocumentCreate, force_reindex: bool = False) -> KnowledgeDocumentRead:
+        content = self._normalize(request.content)
+        sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        current = self.repository.active_by_source(request.source_uri)
+        if current is not None and current.sha256 == sha256 and not force_reindex:
+            return self._to_document_dto(current)
+        version = (current.version if current is not None else 0) + 1
+        self.repository.deactivate_source(request.source_uri)
+        document = self.repository.add_document(
+            KnowledgeDocument(
+                source_uri=request.source_uri,
+                sha256=sha256,
+                version=version,
+                content=content,
+                is_active=True,
+            )
+        )
+        chunks = self._split(content)
+        embeddings = await self.embedding_provider.aembed(chunks)
+        for ordinal, (chunk_content, embedding) in enumerate(zip(chunks, embeddings, strict=True)):
+            self.repository.add_chunk(
+                KnowledgeChunkRecord(document_id=document.id, ordinal=ordinal, content=chunk_content),
+                embedding,
+                self.embedding_provider.model_id,
+            )
+        self.session.flush()
+        return self._to_document_dto(document)
+
     def reindex(self, document_id: UUID) -> KnowledgeDocumentRead:
         document = self.repository.get_active(document_id)
         if document is None:
@@ -60,8 +88,30 @@ class KnowledgeService:
             force_reindex=True,
         )
 
+    async def areindex(self, document_id: UUID) -> KnowledgeDocumentRead:
+        document = self.repository.get_active(document_id)
+        if document is None:
+            raise KnowledgeNotFoundError(str(document_id))
+        return await self.aingest(
+            KnowledgeDocumentCreate(source_uri=document.source_uri, content=document.content),
+            force_reindex=True,
+        )
+
     def search(self, query: str, limit: int = 5) -> list[KnowledgeChunk]:
         query_vector = self.embedding_provider.embed([query])[0]
+        scored: list[KnowledgeChunk] = []
+        for chunk, embedding in self.repository.active_chunk_embeddings():
+            score = self._cosine(query_vector, embedding.embedding)
+            scored.append(
+                KnowledgeChunk(id=chunk.id, document_id=chunk.document_id, content=chunk.content, score=score)
+            )
+        return sorted(scored, key=lambda item: item.score or 0, reverse=True)[:limit]
+
+    async def asearch(self, query: str, limit: int = 5) -> list[KnowledgeChunk]:
+        query_vector = (await self.embedding_provider.aembed([query]))[0]
+        return self._score(query_vector, limit)
+
+    def _score(self, query_vector: list[float], limit: int) -> list[KnowledgeChunk]:
         scored: list[KnowledgeChunk] = []
         for chunk, embedding in self.repository.active_chunk_embeddings():
             score = self._cosine(query_vector, embedding.embedding)

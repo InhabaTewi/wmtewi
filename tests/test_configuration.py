@@ -4,6 +4,8 @@ import pytest
 from pydantic import ValidationError
 
 from apps.control_api.dependencies import (
+    create_knowledge_service,
+    create_provider_router,
     create_database_engine,
     database_engine_options,
     get_knowledge_service,
@@ -12,7 +14,9 @@ from apps.control_api.dependencies import (
 from packages.persistence.config import DEFAULT_EMBEDDING_DIMENSION, Settings
 
 
-def test_development_defaults_preserve_local_configuration() -> None:
+def test_development_defaults_preserve_local_configuration(monkeypatch) -> None:
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     settings = Settings(_env_file=None)
 
     assert settings.app_env == "development"
@@ -61,8 +65,8 @@ def test_llm_and_embedding_factories_use_independent_credentials(monkeypatch, se
     )
     monkeypatch.setattr("apps.control_api.dependencies.settings", configured)
 
-    router = get_provider_router()
-    knowledge = get_knowledge_service(session)
+    router = create_provider_router()
+    knowledge = create_knowledge_service(session)
 
     assert router.external.base_url == "https://llm.example/v1"
     assert router.external.api_key == "llm-secret"

@@ -25,12 +25,16 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o-mini"
     llm_connect_timeout: float = Field(default=10.0, gt=0)
     llm_read_timeout: float = Field(default=60.0, gt=0)
+    llm_max_retries: int = Field(default=1, ge=0, le=2)
 
     embedding_provider: str = "openai-compatible"
     embedding_base_url: str | None = None
     embedding_api_key: SecretStr | None = None
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int = DEFAULT_EMBEDDING_DIMENSION
+    embedding_connect_timeout: float = Field(default=10.0, gt=0)
+    embedding_read_timeout: float = Field(default=30.0, gt=0)
+    embedding_max_retries: int = Field(default=1, ge=0, le=2)
 
     service_token: SecretStr | None = None
     log_level: str = "INFO"

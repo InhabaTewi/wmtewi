@@ -94,20 +94,20 @@ async def chat(
 
 
 @app.post("/api/knowledge/documents", response_model=KnowledgeDocumentRead, status_code=201)
-def ingest_knowledge_document(
+async def ingest_knowledge_document(
     request: KnowledgeDocumentCreate, knowledge: KnowledgeService = Depends(get_knowledge_service)
 ) -> KnowledgeDocumentRead:
-    document = knowledge.ingest(request)
+    document = await knowledge.aingest(request)
     knowledge.session.commit()
     return document
 
 
 @app.post("/api/knowledge/reindex/{document_id}", response_model=KnowledgeDocumentRead)
-def reindex_knowledge_document(
+async def reindex_knowledge_document(
     document_id: UUID, knowledge: KnowledgeService = Depends(get_knowledge_service)
 ) -> KnowledgeDocumentRead:
     try:
-        document = knowledge.reindex(document_id)
+        document = await knowledge.areindex(document_id)
     except KnowledgeNotFoundError:
         raise HTTPException(status_code=404, detail="Knowledge document not found") from None
     knowledge.session.commit()
@@ -115,10 +115,10 @@ def reindex_knowledge_document(
 
 
 @app.get("/api/knowledge/search", response_model=KnowledgeSearchResponse)
-def search_knowledge(
+async def search_knowledge(
     q: str, limit: int = Query(default=5, ge=1, le=20), knowledge: KnowledgeService = Depends(get_knowledge_service)
 ) -> KnowledgeSearchResponse:
-    return KnowledgeSearchResponse(chunks=knowledge.search(q, limit))
+    return KnowledgeSearchResponse(chunks=await knowledge.asearch(q, limit))
 
 
 @app.delete("/api/knowledge/documents/{document_id}", status_code=204)
