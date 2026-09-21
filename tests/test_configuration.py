@@ -3,7 +3,12 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from apps.control_api.dependencies import get_knowledge_service, get_provider_router
+from apps.control_api.dependencies import (
+    create_database_engine,
+    database_engine_options,
+    get_knowledge_service,
+    get_provider_router,
+)
 from packages.persistence.config import DEFAULT_EMBEDDING_DIMENSION, Settings
 
 
@@ -94,3 +99,32 @@ def test_embedding_dimension_and_paths_parse_from_environment(monkeypatch) -> No
     assert settings.backup_path == Path("/srv/inaba/backups")
     assert settings.allowed_hosts == ["api.example", "admin.example"]
     assert settings.cors_origins == ["https://app.example", "https://admin.example"]
+
+
+def test_database_engine_uses_postgres_pool_settings(monkeypatch) -> None:
+    configured = Settings(
+        database_url="postgresql+psycopg://user:password@db.example/inaba",
+        database_pool_size=7,
+        database_max_overflow=3,
+        database_pool_recycle=120,
+        database_connect_timeout=9,
+        _env_file=None,
+    )
+    monkeypatch.setattr("apps.control_api.dependencies.settings", configured)
+
+    options = database_engine_options(configured.database_url)
+
+    assert options["pool_pre_ping"] is True
+    assert options["pool_size"] == 7
+    assert options["max_overflow"] == 3
+    assert options["pool_recycle"] == 120
+    assert options["connect_args"] == {"connect_timeout": 9}
+
+
+def test_database_engine_keeps_sqlite_free_of_postgres_pool_options() -> None:
+    assert database_engine_options("sqlite://") == {}
+    engine = create_database_engine("sqlite://")
+    try:
+        assert engine.dialect.name == "sqlite"
+    finally:
+        engine.dispose()

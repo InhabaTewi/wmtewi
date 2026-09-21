@@ -9,7 +9,27 @@ from packages.knowledge.embedding import ExternalOpenAIEmbeddingProvider
 from packages.knowledge.service import KnowledgeService
 from packages.providers import ExternalOpenAIProvider, ProviderRouter
 
-engine = create_engine(settings.database_url, pool_pre_ping=True)
+
+def database_engine_options(database_url: str) -> dict:
+    if database_url.startswith("sqlite"):
+        return {}
+    return {
+        "pool_pre_ping": True,
+        "pool_size": settings.database_pool_size,
+        "max_overflow": settings.database_max_overflow,
+        "pool_recycle": settings.database_pool_recycle,
+        "connect_args": {"connect_timeout": settings.database_connect_timeout},
+    }
+
+
+def create_database_engine(database_url: str | None = None):
+    url = database_url or settings.database_url
+    if url.startswith("sqlite"):
+        return create_engine(url)
+    return create_engine(url, **database_engine_options(url))
+
+
+engine = create_database_engine()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 

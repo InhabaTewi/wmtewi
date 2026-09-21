@@ -12,10 +12,12 @@ down_revision = "20260921_0001"
 branch_labels = None
 depends_on = None
 
+HISTORICAL_EMBEDDING_DIMENSION = 1536
+
 
 def upgrade() -> None:
     op.execute(
-        """
+        f"""
         DO $$ BEGIN
             IF EXISTS (
                 SELECT 1 FROM pg_constraint
@@ -50,7 +52,7 @@ def upgrade() -> None:
                   AND udt_name <> 'vector'
             ) THEN
                 ALTER TABLE knowledge_embeddings
-                    ALTER COLUMN embedding TYPE vector(1536) USING embedding::text::vector;
+                    ALTER COLUMN embedding TYPE vector({HISTORICAL_EMBEDDING_DIMENSION}) USING embedding::text::vector;
             END IF;
         END $$;
         """

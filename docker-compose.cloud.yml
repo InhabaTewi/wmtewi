@@ -1,3 +1,4 @@
+# Development-only PostgreSQL for local use. M01 production Compose is intentionally deferred.
 services:
   postgres:
     image: pgvector/pgvector:pg17
