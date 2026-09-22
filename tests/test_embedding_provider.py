@@ -95,6 +95,7 @@ async def test_embedding_provider_retries_and_health_fallback() -> None:
         nonlocal attempts
         attempts += 1
         if request.url.path.endswith("/models"):
+            assert request.headers["authorization"] == "Bearer embedding-secret"
             return httpx.Response(404)
         if attempts == 1:
             return httpx.Response(503)

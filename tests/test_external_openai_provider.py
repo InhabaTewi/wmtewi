@@ -108,11 +108,15 @@ async def test_external_provider_rejects_invalid_structured_output_and_closes_cl
 
 @pytest.mark.asyncio
 async def test_external_provider_health_supports_models_fallback_and_auth_failure() -> None:
+    def models_not_found(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer secret"
+        return httpx.Response(404)
+
     degraded = ExternalOpenAIProvider(
         base_url="https://llm.example/v1",
         api_key="secret",
         model_id="test-model",
-        transport=httpx.MockTransport(lambda request: httpx.Response(404)),
+        transport=httpx.MockTransport(models_not_found),
     )
     unauthenticated = ExternalOpenAIProvider(
         base_url="https://llm.example/v1",

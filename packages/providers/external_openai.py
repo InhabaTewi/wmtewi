@@ -95,7 +95,12 @@ class ExternalOpenAIProvider:
 
     async def health_status(self) -> ProviderHealth:
         try:
-            response = await self._request("GET", "/models", allowed_statuses={404})
+            response = await self._request(
+                "GET",
+                "/models",
+                allowed_statuses={404},
+                headers={"Authorization": f"Bearer {self.api_key}"},
+            )
         except ProviderConfigurationError:
             return ProviderHealth("unavailable", "not configured")
         except ProviderAuthenticationError:
