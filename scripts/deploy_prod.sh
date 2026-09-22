@@ -51,7 +51,11 @@ mkdir -p "${INABA_KNOWLEDGE_DATA_DIR:-/opt/inaba-data/knowledge}/sources" "${INA
 
 export INABA_ENV_FILE="$ENV_FILE"
 export INABA_CORE_PORT="${INABA_CORE_PORT:-$PORT}"
-$COMPOSE_BIN -f "$COMPOSE_FILE" build core
+if [[ -z "${INABA_CORE_IMAGE:-}" ]]; then
+    $COMPOSE_BIN -f "$COMPOSE_FILE" build core
+else
+    echo "Using prebuilt Core image: $INABA_CORE_IMAGE"
+fi
 $COMPOSE_BIN -f "$COMPOSE_FILE" up -d postgres
 
 for _ in {1..60}; do

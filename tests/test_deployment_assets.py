@@ -57,6 +57,8 @@ def test_deploy_script_runs_migration_before_core_start() -> None:
     assert "/health/live" in script
     assert "/health/ready" in script
     assert "PYTHON_BASE_IMAGE" in script
+    assert 'if [[ -z "${INABA_CORE_IMAGE:-}" ]]; then' in script
+    assert 'echo "Using prebuilt Core image: $INABA_CORE_IMAGE"' in script
     assert 'PORT="${INABA_CORE_PORT:-$PORT}"' in script
 
 

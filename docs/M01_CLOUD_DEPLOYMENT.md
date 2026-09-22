@@ -97,6 +97,19 @@ sudo PYTHON_BASE_IMAGE=localhost/python:3.12-slim \
 
 `PYTHON_BASE_IMAGE` is a build override only. It defaults to the official image in normal connected environments and must never be replaced by a local-only image name in the committed Dockerfile.
 
+## Offline Prebuilt Core Image
+
+When a Core image has been built on a connected machine, load its archive on the production host and set `INABA_CORE_IMAGE` in `/etc/inaba/inaba.env` to the loaded image reference:
+
+```bash
+podman load -i inaba-core-m01.tar
+# Set INABA_CORE_IMAGE to the repository:tag reported by podman load.
+sudoedit /etc/inaba/inaba.env
+sudo INABA_ENV_FILE=/etc/inaba/inaba.env ./scripts/deploy_prod.sh
+```
+
+With `INABA_CORE_IMAGE` set, `deploy_prod.sh` uses that existing image and skips `build core`. Without it, the script preserves the normal connected-environment build flow.
+
 ## Troubleshooting
 
 - If port 8000 is occupied, deploy with `INABA_CORE_PORT=18000` and use that port for health/status commands.
