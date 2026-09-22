@@ -57,3 +57,23 @@ class MemoryRepository:
         self.session.add(record)
         self.session.flush()
         return record
+
+    def export_records(
+        self,
+        *,
+        persona_id: str | None,
+        subject_id: str | None,
+        confirmed_only: bool,
+        active_only: bool,
+    ) -> list[MemoryAtomRecord]:
+        statement: Select[tuple[MemoryAtomRecord]] = select(MemoryAtomRecord)
+        if persona_id is not None:
+            statement = statement.where(MemoryAtomRecord.persona_id == persona_id)
+        if subject_id is not None:
+            statement = statement.where(MemoryAtomRecord.subject_id == subject_id)
+        if confirmed_only:
+            statement = statement.where(MemoryAtomRecord.confirmed.is_(True))
+        if active_only:
+            statement = statement.where(MemoryAtomRecord.valid_to.is_(None))
+        statement = statement.order_by(MemoryAtomRecord.created_at, MemoryAtomRecord.id)
+        return list(self.session.scalars(statement))

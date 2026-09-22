@@ -16,6 +16,14 @@ class PersonaRepository:
         )
         return self.session.scalar(statement)
 
+    def get_version(self, persona_id: str, version: str) -> PersonaVersion | None:
+        return self.session.scalar(
+            select(PersonaVersion).where(
+                PersonaVersion.persona_id == persona_id,
+                PersonaVersion.version == version,
+            )
+        )
+
     def upsert_version(self, package: PersonaPackage, activate: bool = True) -> PersonaVersion:
         statement = select(PersonaVersion).where(
             PersonaVersion.persona_id == package.persona_id,

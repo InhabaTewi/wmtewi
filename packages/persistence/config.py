@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     )
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
     knowledge_data_path: Path = Path("data/knowledge")
+    knowledge_max_file_bytes: int = Field(default=5 * 1024 * 1024, gt=0)
     backup_path: Path = Path("data/backups")
 
     @field_validator("allowed_hosts", "cors_origins", mode="before")

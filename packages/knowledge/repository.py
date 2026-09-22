@@ -28,6 +28,12 @@ class KnowledgeRepository:
             )
         )
 
+    def list_active(self, source_uri: str | None = None) -> list[KnowledgeDocument]:
+        statement = select(KnowledgeDocument).where(KnowledgeDocument.is_active.is_(True))
+        if source_uri is not None:
+            statement = statement.where(KnowledgeDocument.source_uri == source_uri)
+        return list(self.session.scalars(statement.order_by(KnowledgeDocument.source_uri)))
+
     def deactivate_source(self, source_uri: str) -> None:
         self.session.execute(
             update(KnowledgeDocument)

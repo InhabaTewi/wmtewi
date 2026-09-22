@@ -8,6 +8,7 @@ from packages.persistence.models import MemoryAtomRecord
 from packages.schemas.memory import (
     MemoryAtom,
     MemoryCandidateCreate,
+    MemoryImportAtom,
     MemorySearchRequest,
     MemorySupersedeRequest,
 )
@@ -85,6 +86,63 @@ class MemoryService:
                 session_id=session_id,
             )
         )
+
+    def export_records(
+        self,
+        *,
+        persona_id: str | None = None,
+        subject_id: str | None = None,
+        active_only: bool = True,
+        confirmed_only: bool = True,
+    ) -> list[MemoryImportAtom]:
+        return [
+            MemoryImportAtom(
+                **self._to_dto(record).model_dump(),
+                created_at=record.created_at,
+                updated_at=record.updated_at,
+            )
+            for record in self.repository.export_records(
+                persona_id=persona_id,
+                subject_id=subject_id,
+                confirmed_only=confirmed_only,
+                active_only=active_only,
+            )
+        ]
+
+    def import_record(self, atom: MemoryImportAtom, *, on_conflict: str = "error") -> str:
+        existing = self.repository.get(atom.id)
+        if existing is not None:
+            if existing.content == atom.content:
+                return "skipped"
+            if on_conflict == "skip":
+                return "conflicted"
+            raise ValueError(f"memory conflict for stable ID {atom.id}")
+        if atom.supersedes_id is not None and self.repository.get(atom.supersedes_id) is None:
+            raise ValueError(f"supersedes_id {atom.supersedes_id} does not exist")
+        self.repository.add(
+            MemoryAtomRecord(
+                id=atom.id,
+                type=atom.type,
+                subject_id=atom.subject_id,
+                object_id=atom.object_id,
+                persona_id=atom.persona_id,
+                session_id=atom.session_id,
+                content=atom.content,
+                scope=atom.scope,
+                importance=atom.importance,
+                confidence=atom.confidence,
+                confirmed=atom.confirmed,
+                source_event_id=atom.source_event_id,
+                source_runtime_mode=atom.source_runtime_mode,
+                valid_from=atom.valid_from,
+                valid_to=atom.valid_to,
+                version=atom.version,
+                supersedes_id=atom.supersedes_id,
+                created_at=atom.created_at,
+                updated_at=atom.updated_at,
+            )
+        )
+        return "inserted"
 
     def _require(self, memory_id: UUID) -> MemoryAtomRecord:
         record = self.repository.get(memory_id)

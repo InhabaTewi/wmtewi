@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 MemoryType = Literal[
     "preference",
@@ -64,3 +64,33 @@ class MemorySearchRequest(BaseModel):
 
 class MemorySupersedeRequest(MemoryCandidateCreate):
     pass
+
+
+class MemoryImportAtom(MemoryAtom):
+    """Portable JSONL record for a stable-ID Memory migration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("scope")
+    @classmethod
+    def validate_scope(cls, value: str) -> str:
+        if not value.strip() or len(value) > 256:
+            raise ValueError("scope must be non-empty and at most 256 characters")
+        return value
+
+    @field_validator("persona_id")
+    @classmethod
+    def validate_persona_id(cls, value: str | None) -> str | None:
+        if value is not None and (not value.strip() or len(value) > 128):
+            raise ValueError("persona_id must be non-empty and at most 128 characters")
+        return value
+
+    @field_validator("importance", "confidence")
+    @classmethod
+    def validate_score(cls, value: float) -> float:
+        if not 0 <= value <= 1:
+            raise ValueError("importance and confidence must be between 0 and 1")
+        return value
