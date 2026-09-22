@@ -1,6 +1,6 @@
 # M01 Cloud Deployment
 
-M01-7 deploys the Cloud Core as `inaba-core` and `inaba-postgres` on a private `inaba_internal` container network. It does not add a reverse proxy, TLS, GPU worker, or public PostgreSQL endpoint. The Core API binds only to `127.0.0.1:8000` by default so M01-8 can later add a proxy.
+M01-7 deploys the Cloud Core as `inaba-core` and `inaba-postgres` on a private `inaba_internal` container network. It does not add TLS, a GPU worker, or public PostgreSQL. For M01-8 HTTP ingress, Core binds to `127.0.0.1:1515` and existing host Nginx publishes `http://wmtewi.space/tewi`; see [M01_HTTP_INGRESS.md](M01_HTTP_INGRESS.md).
 
 ## Prerequisites
 
@@ -41,8 +41,8 @@ The deployment script validates configuration before starting. Secrets remain on
 ```bash
 sudo INABA_ENV_FILE=/etc/inaba/inaba.env ./scripts/deploy_prod.sh
 sudo INABA_ENV_FILE=/etc/inaba/inaba.env ./scripts/status_prod.sh
-curl http://127.0.0.1:8000/health/live
-curl http://127.0.0.1:8000/health/ready
+curl http://127.0.0.1:1515/health/live
+curl http://127.0.0.1:1515/health/ready
 ```
 
 `deploy_prod.sh` builds the Core image, starts PostgreSQL, waits for `pg_isready`, runs `python -m alembic upgrade head` using the Core image, starts Core only after migration success, and then requires live and ready health checks. It is idempotent: it does not remove volumes, reset data, import data, or alter secrets. Migration failure leaves Core stopped and exits nonzero.

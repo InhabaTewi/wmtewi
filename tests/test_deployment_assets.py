@@ -65,3 +65,22 @@ def test_lifecycle_scripts_load_deployment_overrides_from_env_file() -> None:
         script = (PROJECT_ROOT / "scripts" / filename).read_text()
         assert "INABA_POSTGRES_DATA_DIR" in script
         assert "INABA_CORE_PORT" in script
+
+
+def test_http_ingress_template_is_loopback_only_and_strips_tewi_prefix() -> None:
+    template = (PROJECT_ROOT / "deploy/nginx/tewi-location.conf.template").read_text()
+
+    assert "location = /tewi" in template
+    assert "location ^~ /tewi/" in template
+    assert "proxy_pass http://127.0.0.1:1515/;" in template
+    assert "proxy_set_header Authorization $http_authorization;" in template
+    assert "proxy_set_header Authorization \"\";" not in template
+    assert "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;" in template
+    assert "client_max_body_size 20m;" in template
+    for directive in ("proxy_connect_timeout 10s;", "proxy_send_timeout 120s;", "proxy_read_timeout 120s;"):
+        assert directive in template
+    for header in ("X-Content-Type-Options", "X-Frame-Options", "Referrer-Policy"):
+        assert header in template
+    assert "5432" not in template
+    assert "listen 443" not in template
+    assert "ssl_" not in template

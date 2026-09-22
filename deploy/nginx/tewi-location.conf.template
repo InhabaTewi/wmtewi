@@ -1,0 +1,25 @@
+# Insert these locations inside the existing `server_name wmtewi.space` block.
+# Do not create a second wmtewi.space server block.
+location = /tewi {
+    return 301 /tewi/;
+}
+
+location ^~ /tewi/ {
+    proxy_pass http://127.0.0.1:1515/;
+    proxy_http_version 1.1;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Authorization $http_authorization;
+
+    proxy_connect_timeout 10s;
+    proxy_send_timeout 120s;
+    proxy_read_timeout 120s;
+    client_max_body_size 20m;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+}
