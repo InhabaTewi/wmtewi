@@ -81,6 +81,22 @@ sudo POSTGRES_IMAGE=localhost/pg17:latest INABA_ENV_FILE=/etc/inaba/inaba.env ./
 
 Never commit image tar files. `localhost/pg17:latest` is an offline override, not the production default.
 
+## Offline Python Base Image
+
+The default Core build uses `python:3.12-slim`. For an offline server, save the base image on a connected machine, transfer the archive outside Git, then load and tag it locally:
+
+```bash
+docker pull python:3.12-slim
+docker save python:3.12-slim -o python-3.12-slim.tar
+
+podman load -i python-3.12-slim.tar
+podman tag <loaded-image> localhost/python:3.12-slim
+sudo PYTHON_BASE_IMAGE=localhost/python:3.12-slim \
+	INABA_ENV_FILE=/etc/inaba/inaba.env ./scripts/deploy_prod.sh
+```
+
+`PYTHON_BASE_IMAGE` is a build override only. It defaults to the official image in normal connected environments and must never be replaced by a local-only image name in the committed Dockerfile.
+
 ## Troubleshooting
 
 - If port 8000 is occupied, deploy with `INABA_CORE_PORT=18000` and use that port for health/status commands.

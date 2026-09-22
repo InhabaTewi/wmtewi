@@ -26,7 +26,8 @@ def test_core_dockerfile_is_nonroot_and_excludes_development_assets() -> None:
     dockerfile = (PROJECT_ROOT / "deploy/Dockerfile.core").read_text()
     ignored = (PROJECT_ROOT / ".dockerignore").read_text()
 
-    assert "FROM python:3.12-slim" in dockerfile
+    assert "ARG PYTHON_BASE_IMAGE=python:3.12-slim" in dockerfile
+    assert "FROM ${PYTHON_BASE_IMAGE}" in dockerfile
     assert "pip install --no-cache-dir ." in dockerfile
     assert "USER inaba" in dockerfile
     assert "--reload" not in dockerfile
@@ -55,3 +56,12 @@ def test_deploy_script_runs_migration_before_core_start() -> None:
     assert script.index("python -m alembic upgrade head") < script.index("up -d core")
     assert "/health/live" in script
     assert "/health/ready" in script
+    assert "PYTHON_BASE_IMAGE" in script
+    assert 'PORT="${INABA_CORE_PORT:-$PORT}"' in script
+
+
+def test_lifecycle_scripts_load_deployment_overrides_from_env_file() -> None:
+    for filename in ("deploy_prod.sh", "status_prod.sh", "stop_prod.sh"):
+        script = (PROJECT_ROOT / "scripts" / filename).read_text()
+        assert "INABA_POSTGRES_DATA_DIR" in script
+        assert "INABA_CORE_PORT" in script

@@ -36,12 +36,13 @@ if ! grep -q '^APP_ENV=production$' "$ENV_FILE"; then
     exit 1
 fi
 
-for key in POSTGRES_IMAGE INABA_POSTGRES_DATA_DIR INABA_KNOWLEDGE_DATA_DIR INABA_BACKUP_DIR INABA_CORE_PORT INABA_CORE_IMAGE; do
+for key in POSTGRES_IMAGE PYTHON_BASE_IMAGE INABA_POSTGRES_DATA_DIR INABA_KNOWLEDGE_DATA_DIR INABA_BACKUP_DIR INABA_CORE_PORT INABA_CORE_IMAGE; do
     value="$(grep -E "^${key}=" "$ENV_FILE" | tail -n 1 | cut -d= -f2- || true)"
     if [[ -n "$value" ]]; then
         export "$key=$value"
     fi
 done
+PORT="${INABA_CORE_PORT:-$PORT}"
 
 for directory in "${INABA_POSTGRES_DATA_DIR:-/opt/inaba-data/postgres}" "${INABA_KNOWLEDGE_DATA_DIR:-/opt/inaba-data/knowledge}" "${INABA_BACKUP_DIR:-/opt/inaba-backups}"; do
     mkdir -p "$directory"
