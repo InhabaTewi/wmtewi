@@ -1,6 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
+from pydantic import SecretStr
 
 from apps.control_api import dependencies
 from apps.control_api.main import app, get_knowledge_service, get_provider_router
@@ -70,7 +71,7 @@ async def test_chat_combines_persona_matching_memory_and_knowledge(session) -> N
     assert "Jasmine tea is fragrant." in joined_prompt
 
 
-def test_chat_endpoint_passes_persona_memory_and_knowledge_to_provider(session) -> None:
+def test_chat_endpoint_passes_persona_memory_and_knowledge_to_provider(session, monkeypatch) -> None:
     PersonaRepository(session).upsert_version(
         PersonaPackage(
             persona_id="inaba",
@@ -112,10 +113,12 @@ def test_chat_endpoint_passes_persona_memory_and_knowledge_to_provider(session) 
         get_provider_router: override_router,
         get_knowledge_service: override_knowledge,
     }
+    monkeypatch.setattr(dependencies.settings, "service_token", SecretStr("test-service-token"))
     try:
         response = TestClient(app).post(
             "/api/chat",
             json={"channel": "web", "session_id": "api-session", "user_id": "api-user", "text": "Endpoint"},
+            headers={"Authorization": "Bearer test-service-token"},
         )
     finally:
         app.dependency_overrides.clear()

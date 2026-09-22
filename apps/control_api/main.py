@@ -1,8 +1,10 @@
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+from apps.control_api import dependencies
 from apps.control_api.dependencies import get_knowledge_service, get_provider_router, get_session
 from packages.chat.service import ChatService
 from packages.knowledge.service import KnowledgeNotFoundError, KnowledgeService
@@ -20,11 +22,36 @@ from packages.schemas.memory import (
 from packages.schemas.persona import PersonaVersionRead
 
 app = FastAPI(title="Inaba AI Control API", version="0.1.0")
+ANONYMOUS_PATHS = {"/health", "/health/live", "/health/ready"}
+
+
+@app.middleware("http")
+async def require_service_authentication(request: Request, call_next):
+    if request.url.path not in ANONYMOUS_PATHS and not dependencies.is_valid_service_authorization(
+        request.headers.get("Authorization")
+    ):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Unauthorized"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return await call_next(request)
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "service": "inaba-core"}
+
+
+@app.get("/health/live")
+def health_live() -> dict[str, str]:
+    return health()
+
+
+@app.get("/health/ready")
+async def health_ready() -> Response:
+    report = await dependencies.readiness_report()
+    return JSONResponse(status_code=200 if report["status"] != "not_ready" else 503, content=report)
 
 
 @app.get("/api/personas/{persona_id}/active", response_model=PersonaVersionRead)

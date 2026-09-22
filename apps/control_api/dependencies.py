@@ -1,13 +1,24 @@
+import asyncio
+import secrets
 from collections.abc import AsyncGenerator, Generator
+from pathlib import Path
+from typing import Literal
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from fastapi import Depends
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from packages.persistence.config import settings
 from packages.knowledge.embedding import ExternalOpenAIEmbeddingProvider
 from packages.knowledge.service import KnowledgeService
+from packages.persona.repository import PersonaRepository
 from packages.providers import ExternalOpenAIProvider, ProviderRouter
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ReadinessState = Literal["healthy", "degraded", "unavailable"]
 
 
 def database_engine_options(database_url: str) -> dict:
@@ -36,6 +47,14 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 def get_session() -> Generator[Session, None, None]:
     with SessionLocal() as session:
         yield session
+
+
+def is_valid_service_authorization(authorization: str | None) -> bool:
+    expected = settings.service_token.get_secret_value() if settings.service_token is not None else None
+    if not expected or authorization is None:
+        return False
+    scheme, separator, provided = authorization.partition(" ")
+    return separator == " " and scheme == "Bearer" and bool(provided) and secrets.compare_digest(provided, expected)
 
 
 def create_provider_router() -> ProviderRouter:
@@ -82,3 +101,82 @@ async def get_knowledge_service(
         yield knowledge
     finally:
         await knowledge.embedding_provider.aclose()
+
+
+def _expected_alembic_revision() -> str:
+    config = Config(str(PROJECT_ROOT / "alembic.ini"))
+    return ScriptDirectory.from_config(config).get_current_head()
+
+
+def check_database_readiness() -> bool:
+    try:
+        with engine.connect() as connection:
+            if connection.scalar(text("SELECT 1")) != 1:
+                return False
+            if connection.scalar(text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")) != 1:
+                return False
+            return connection.scalar(text("SELECT version_num FROM alembic_version")) == _expected_alembic_revision()
+    except Exception:
+        return False
+
+
+def check_persona_readiness() -> bool:
+    try:
+        with SessionLocal() as session:
+            return PersonaRepository(session).get_active("inaba") is not None
+    except Exception:
+        return False
+
+
+async def check_llm_readiness() -> ReadinessState:
+    router = create_provider_router()
+    try:
+        return (await router.external.health_status()).state
+    except Exception:
+        return "unavailable"
+    finally:
+        await router.external.aclose()
+
+
+async def check_embedding_readiness() -> ReadinessState:
+    knowledge = create_knowledge_service(SessionLocal())
+    try:
+        return (await knowledge.embedding_provider.health_status()).state
+    except Exception:
+        return "unavailable"
+    finally:
+        knowledge.session.close()
+        await knowledge.embedding_provider.aclose()
+
+
+async def readiness_report() -> dict[str, str]:
+    try:
+        database, persona, llm, embedding = await asyncio.wait_for(
+            asyncio.gather(
+                asyncio.to_thread(check_database_readiness),
+                asyncio.to_thread(check_persona_readiness),
+                check_llm_readiness(),
+                check_embedding_readiness(),
+            ),
+            timeout=settings.readiness_timeout,
+        )
+    except (asyncio.TimeoutError, Exception):
+        return {
+            "status": "not_ready",
+            "database": "unavailable",
+            "persona": "unavailable",
+            "llm": "unavailable",
+            "embedding": "unavailable",
+        }
+
+    report = {
+        "database": "ok" if database else "unavailable",
+        "persona": "ok" if persona else "unavailable",
+        "llm": llm,
+        "embedding": embedding,
+    }
+    if not database or not persona or "unavailable" in {llm, embedding}:
+        return {"status": "not_ready", **report}
+    if "degraded" in {llm, embedding}:
+        return {"status": "degraded", **report}
+    return {"status": "ready", **report}
