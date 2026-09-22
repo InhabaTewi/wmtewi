@@ -1,0 +1,28 @@
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY pyproject.toml README.md alembic.ini ./
+COPY apps ./apps
+COPY packages ./packages
+COPY migrations ./migrations
+COPY configs ./configs
+
+RUN pip install --no-cache-dir . \
+    && groupadd --gid 10001 inaba \
+    && useradd --uid 10001 --gid inaba --create-home --shell /usr/sbin/nologin inaba \
+    && mkdir -p /data/knowledge /data/backups \
+    && chown -R inaba:inaba /app /data
+
+USER inaba
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health/live', timeout=3).read()"
+
+CMD ["uvicorn", "apps.control_api.main:app", "--host", "0.0.0.0", "--port", "8000"]
