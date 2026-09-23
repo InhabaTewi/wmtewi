@@ -67,6 +67,7 @@ class ChatService:
                 user_id=event.user_id,
             )
             self.session.add(session_record)
+            self.session.flush()
         self.session.add_all(
             [
                 Message(session_id=event.session_id, role="user", content=event.text, trace_id=event.trace_id),
