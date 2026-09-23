@@ -1,0 +1,1 @@
+"""Outbound local GPU worker for the Cloud Core Worker Registry."""
