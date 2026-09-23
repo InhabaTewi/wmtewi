@@ -29,6 +29,12 @@ def test_live_health_does_not_depend_on_readiness(monkeypatch) -> None:
     assert TestClient(app).get("/health/live").status_code == 200
 
 
+def test_unknown_path_returns_not_found_before_authentication() -> None:
+    response = TestClient(app).get("/tewi/health/live")
+
+    assert response.status_code == 404
+
+
 @pytest.mark.parametrize(
     ("path", "payload"),
     [

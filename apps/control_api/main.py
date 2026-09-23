@@ -23,11 +23,12 @@ from packages.schemas.persona import PersonaVersionRead
 
 app = FastAPI(title="Inaba AI Control API", version="0.1.0")
 ANONYMOUS_PATHS = {"/health", "/health/live", "/health/ready"}
+PROTECTED_PATH_PREFIX = "/api/"
 
 
 @app.middleware("http")
 async def require_service_authentication(request: Request, call_next):
-    if request.url.path not in ANONYMOUS_PATHS and not dependencies.is_valid_service_authorization(
+    if request.url.path.startswith(PROTECTED_PATH_PREFIX) and not dependencies.is_valid_service_authorization(
         request.headers.get("Authorization")
     ):
         return JSONResponse(
