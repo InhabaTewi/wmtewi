@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     embedding_max_retries: int = Field(default=1, ge=0, le=2)
 
     service_token: SecretStr | None = None
+    worker_heartbeat_timeout_seconds: int = Field(default=45, gt=0, le=3600)
     readiness_timeout: float = Field(default=5.0, gt=0, le=15)
     log_level: str = "INFO"
     allowed_hosts: Annotated[list[str], NoDecode] = Field(

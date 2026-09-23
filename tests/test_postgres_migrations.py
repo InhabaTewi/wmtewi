@@ -24,6 +24,18 @@ EXPECTED_TABLES = {
     "worker_nodes",
 }
 VECTOR_INDEX_NAME = "ix_knowledge_embeddings_embedding_hnsw_cosine"
+WORKER_COLUMNS = {
+    "worker_id",
+    "last_seen_at",
+    "gpu_name",
+    "gpu_count",
+    "vram_total_mb",
+    "vram_used_mb",
+    "vram_free_mb",
+    "loaded_model",
+    "model_version",
+    "model_alias",
+}
 
 
 @pytest.fixture
@@ -51,8 +63,9 @@ def assert_postgres_schema(postgres_url: str) -> None:
     try:
         with engine.connect() as connection:
             assert connection.scalar(text("SELECT extversion FROM pg_extension WHERE extname = 'vector'"))
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260922_0004"
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260924_0005"
             assert EXPECTED_TABLES <= set(inspect(connection).get_table_names())
+            assert WORKER_COLUMNS <= {column["name"] for column in inspect(connection).get_columns("worker_nodes")}
             embedding_type = connection.scalar(
                 text(
                     "SELECT format_type(a.atttypid, a.atttypmod) "
@@ -80,15 +93,12 @@ def test_postgres_alembic_schema_is_repeatable(postgres_url: str) -> None:
     run_alembic("upgrade", "head", postgres_url)
     assert_postgres_schema(postgres_url)
 
-    run_alembic("downgrade", "20260921_0003", postgres_url)
+    run_alembic("downgrade", "20260922_0004", postgres_url)
     engine = create_engine(postgres_url)
     try:
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260921_0003"
-            assert connection.scalar(
-                text("SELECT 1 FROM pg_indexes WHERE indexname = :index_name"),
-                {"index_name": VECTOR_INDEX_NAME},
-            ) is None
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260922_0004"
+            assert not WORKER_COLUMNS & {column["name"] for column in inspect(connection).get_columns("worker_nodes")}
     finally:
         engine.dispose()
     run_alembic("upgrade", "head", postgres_url)

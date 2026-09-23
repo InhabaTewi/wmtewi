@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
@@ -20,6 +21,14 @@ from packages.schemas.memory import (
     MemorySupersedeRequest,
 )
 from packages.schemas.persona import PersonaVersionRead
+from packages.schemas.worker import (
+    WorkerHeartbeatRequest,
+    WorkerHeartbeatResponse,
+    WorkerInfo,
+    WorkerRegisterRequest,
+    WorkerRegisterResponse,
+)
+from packages.worker_nodes.service import WorkerNotFoundError, WorkerRegistryService
 
 app = FastAPI(title="Inaba AI Control API", version="0.1.0")
 ANONYMOUS_PATHS = {"/health", "/health/live", "/health/ready"}
@@ -159,3 +168,48 @@ def delete_knowledge_document(
         raise HTTPException(status_code=404, detail="Knowledge document not found") from None
     knowledge.session.commit()
     return Response(status_code=204)
+
+
+@app.post("/api/workers/register", response_model=WorkerRegisterResponse)
+def register_worker(
+    request: WorkerRegisterRequest, session: Session = Depends(get_session)
+) -> WorkerRegisterResponse:
+    server_time = datetime.now(UTC)
+    worker = WorkerRegistryService(session).register(request, server_time)
+    session.commit()
+    return WorkerRegisterResponse(
+        worker=worker,
+        heartbeat_interval_seconds=dependencies.settings.worker_heartbeat_timeout_seconds // 3,
+        server_time=server_time,
+    )
+
+
+@app.post("/api/workers/{worker_id}/heartbeat", response_model=WorkerHeartbeatResponse)
+def heartbeat_worker(
+    worker_id: str,
+    request: WorkerHeartbeatRequest,
+    session: Session = Depends(get_session),
+) -> WorkerHeartbeatResponse:
+    try:
+        worker = WorkerRegistryService(session).heartbeat(worker_id, request)
+    except WorkerNotFoundError:
+        raise HTTPException(status_code=404, detail="Worker not found") from None
+    session.commit()
+    return WorkerHeartbeatResponse(
+        worker=worker,
+        heartbeat_interval_seconds=dependencies.settings.worker_heartbeat_timeout_seconds // 3,
+        server_time=datetime.now(UTC),
+    )
+
+
+@app.get("/api/workers", response_model=list[WorkerInfo])
+def list_workers(session: Session = Depends(get_session)) -> list[WorkerInfo]:
+    return WorkerRegistryService(session).list()
+
+
+@app.get("/api/workers/{worker_id}", response_model=WorkerInfo)
+def get_worker(worker_id: str, session: Session = Depends(get_session)) -> WorkerInfo:
+    try:
+        return WorkerRegistryService(session).get(worker_id)
+    except WorkerNotFoundError:
+        raise HTTPException(status_code=404, detail="Worker not found") from None

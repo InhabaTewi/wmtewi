@@ -41,6 +41,7 @@ def test_unknown_path_returns_not_found_before_authentication() -> None:
         ("/api/chat", {}),
         ("/api/memory/search", {}),
         ("/api/knowledge/documents", {}),
+        ("/api/workers/register", {}),
     ],
 )
 def test_business_routes_require_a_valid_bearer_token(monkeypatch, path: str, payload: dict) -> None:
@@ -59,6 +60,7 @@ def test_business_routes_require_a_valid_bearer_token(monkeypatch, path: str, pa
         ("/api/chat", {}),
         ("/api/memory/search", {}),
         ("/api/knowledge/documents", {}),
+        ("/api/workers/register", {}),
     ],
 )
 def test_correct_bearer_token_reaches_business_routes(monkeypatch, path: str, payload: dict) -> None:
