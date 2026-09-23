@@ -1,0 +1,11 @@
+[Unit]
+Description=Inaba production logical backup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=/etc/inaba/inaba.env
+WorkingDirectory=/proj/wm/wmtewi/wmtewi
+ExecStart=/proj/wm/wmtewi/wmtewi/scripts/backup.sh

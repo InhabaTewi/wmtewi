@@ -86,3 +86,39 @@ def test_http_ingress_template_is_loopback_only_and_strips_tewi_prefix() -> None
     assert "5432" not in template
     assert "listen 443" not in template
     assert "ssl_" not in template
+
+
+def test_backup_scripts_use_logical_dump_and_isolated_restore() -> None:
+    backup = (PROJECT_ROOT / "scripts/backup.sh").read_text()
+    restore = (PROJECT_ROOT / "scripts/restore.sh").read_text()
+    verify = (PROJECT_ROOT / "scripts/verify_backup.sh").read_text()
+
+    assert "set -euo pipefail" in backup
+    assert "pg_dump" in backup
+    assert "-Fc" in backup
+    assert "pg_restore" not in backup
+    assert "database.dump" in backup
+    assert "sources.tar.gz" in backup
+    assert "checksums.sha256" in backup
+    assert "POSTGRES_PASSWORD" not in backup
+    assert "SERVICE_TOKEN" not in backup
+    assert "rm -rf \"$BACKUP_ROOT\"/*" not in backup
+    assert "--target test" in restore
+    assert "pg_restore" in restore
+    assert "inaba_restore_test" in restore
+    assert '"$target_db" == "inaba"' in restore
+    assert "vector_cosine_ops" in restore
+    assert "sha256sum --check checksums.sha256" in verify
+    assert 'PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' in (
+        PROJECT_ROOT / "scripts/list_backups.sh"
+    ).read_text()
+
+
+def test_backup_timer_template_uses_protected_environment_file() -> None:
+    service = (PROJECT_ROOT / "deploy/systemd/inaba-backup.service").read_text()
+    timer = (PROJECT_ROOT / "deploy/systemd/inaba-backup.timer").read_text()
+
+    assert "EnvironmentFile=/etc/inaba/inaba.env" in service
+    assert "backup.sh" in service
+    assert "OnCalendar=" in timer
+    assert "POSTGRES_PASSWORD" not in service
