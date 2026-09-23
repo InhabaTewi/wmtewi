@@ -97,6 +97,7 @@ async def test_embedding_provider_retries_and_health_fallback() -> None:
         if request.url.path.endswith("/models"):
             assert request.headers["authorization"] == "Bearer embedding-secret"
             return httpx.Response(404)
+        assert json.loads(request.content)["dimensions"] == 1536
         if attempts == 1:
             return httpx.Response(503)
         return httpx.Response(200, json={"data": [{"embedding": vector()}]})

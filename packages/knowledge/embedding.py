@@ -136,7 +136,7 @@ class ExternalOpenAIEmbeddingProvider:
             "POST",
             "/embeddings",
             headers={"Authorization": f"Bearer {self.api_key}"},
-            json={"model": self.model_id, "input": texts},
+            json={"model": self.model_id, "input": texts, "dimensions": self.dimension},
         )
         try:
             data = response.json()["data"]
