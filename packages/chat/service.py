@@ -84,6 +84,7 @@ class ChatService:
                             "source_event_id": event.event_id,
                             "source_runtime_mode": route.runtime_mode,
                             "persona_id": persona_id,
+                            "subject_id": event.user_id,
                             "session_id": event.session_id,
                         }
                     ),

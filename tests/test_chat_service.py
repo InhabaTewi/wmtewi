@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from packages.chat.service import ChatService
 from packages.persona.repository import PersonaRepository
-from packages.persistence.models import InteractionTrace, Message, SessionRecord
+from packages.persistence.models import InteractionTrace, MemoryAtomRecord, Message, SessionRecord
 from packages.providers.router import ProviderRouter
 from packages.schemas.chat import AgentResponse, ChatRequest
 from packages.schemas.memory import MemoryCandidate
@@ -56,6 +56,9 @@ async def test_chat_persists_trace_and_routes_memory_candidates_through_service(
     assert trace is not None
     assert trace.payload["provider"] == "fake-api"
     assert trace.payload["response"]["speech"] == "Hello."
+    memory = session.scalar(select(MemoryAtomRecord).where(MemoryAtomRecord.content == "likes tea"))
+    assert memory is not None
+    assert memory.subject_id == "u-1"
 
 
 @pytest.mark.asyncio
