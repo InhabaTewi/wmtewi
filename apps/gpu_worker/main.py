@@ -3,6 +3,7 @@ import asyncio
 import logging
 import signal
 from collections.abc import Sequence
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -21,6 +22,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--once", action="store_true", help="Register and send one heartbeat, then exit")
     group.add_argument("--diagnose", action="store_true", help="Validate local configuration and GPU access only")
+    parser.add_argument(
+        "--shutdown-file",
+        type=Path,
+        help="Exit gracefully when this local file is created",
+    )
     return parser.parse_args(argv)
 
 
@@ -52,13 +58,27 @@ async def run_worker(args: argparse.Namespace, settings: WorkerSettings) -> int:
         def request_stop() -> None:
             loop.call_soon_threadsafe(stop_event.set)
 
+        async def watch_shutdown_file(path: Path) -> None:
+            while not stop_event.is_set():
+                if path.exists():
+                    logging.getLogger(__name__).info("Worker shutdown file detected")
+                    stop_event.set()
+                    return
+                await asyncio.sleep(0.2)
+
         previous_handlers: dict[signal.Signals, object] = {}
         for signal_type in (signal.SIGINT, signal.SIGTERM):
             previous_handlers[signal_type] = signal.getsignal(signal_type)
             signal.signal(signal_type, lambda _signum, _frame: request_stop())
+        shutdown_watcher = (
+            asyncio.create_task(watch_shutdown_file(args.shutdown_file)) if args.shutdown_file is not None else None
+        )
         try:
             await runtime.run(stop_event)
         finally:
+            if shutdown_watcher is not None:
+                shutdown_watcher.cancel()
+                await asyncio.gather(shutdown_watcher, return_exceptions=True)
             for signal_type, handler in previous_handlers.items():
                 signal.signal(signal_type, handler)
         return 0

@@ -7,6 +7,7 @@ from apps.gpu_worker.client import CloudAuthenticationError, CloudUnavailableErr
 from apps.gpu_worker.config import WorkerSettings
 from apps.gpu_worker.gpu_probe import GpuMetadata, GpuProbeError
 from apps.gpu_worker.runtime import WorkerRuntime
+from apps.gpu_worker.main import parse_args, run_worker
 from packages.schemas.worker import WorkerStatus
 
 
@@ -121,4 +122,21 @@ async def test_runtime_stops_gracefully_when_stop_is_requested() -> None:
 
     assert len(client.register_requests) == 1
     assert len(client.heartbeat_requests) == 1
+    assert client.closed
+
+
+@pytest.mark.asyncio
+async def test_shutdown_file_stops_detached_worker_gracefully(tmp_path, monkeypatch) -> None:
+    shutdown_file = tmp_path / "shutdown.signal"
+    client = FakeClient()
+    runtime = WorkerRuntime(settings(), client, FakeProbe(gpu()))
+    monkeypatch.setattr("apps.gpu_worker.main.create_runtime", lambda _settings: runtime)
+    args = parse_args(["--shutdown-file", str(shutdown_file)])
+
+    task = asyncio.create_task(run_worker(args, settings()))
+    while not client.heartbeat_requests:
+        await asyncio.sleep(0)
+    shutdown_file.write_text("shutdown", encoding="utf-8")
+
+    assert await task == 0
     assert client.closed
