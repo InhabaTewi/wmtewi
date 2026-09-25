@@ -1,0 +1,20 @@
+model_id: qwen3.5-9b-f16
+source_hf_repo: Qwen/Qwen3.5-9B
+source_hf_revision: c202236235762e1c871ad0ccb60c8ee5ba337b9a
+gguf_path: D:/AIGC/models/Qwen3.5-9B/gguf/c202236235762e1c871ad0ccb60c8ee5ba337b9a/Qwen3.5-9B-F16.gguf
+gguf_sha256: 88fbfd78c7e5e74b01ad7868e93f7779feff3101b02dabc5e33e23a7fa2b78ff
+engine: llama_cpp
+llama_cpp_version: 0.5.0-dev (build 11146, commit 7fe450e19)
+llama_cpp_commit: 7fe450e19305b828c199d602c23a8337aaa1f03b
+llama_cpp_artifact: llama-b11146-bin-win-cuda-13.4-x64.zip
+llama_cpp_artifact_sha256: b1866c0ce76bc7bfb0c24b33e9a37e9669f1be18539b12c74ce361f81c41f047
+llama_cpp_cudart_artifact: cudart-llama-bin-win-cuda-13.4-x64.zip
+llama_cpp_cudart_artifact_sha256: 738f8c251ac22b70c3ae6f83a10cf222725df0395246a2cf58f32bdb85fbe668
+llama_server_path: D:/AIGC/runtimes/llama.cpp/b11146/llama-server.exe
+state_file: D:/AIGC/runtimes/llama.cpp/b11146/inaba-local-llamacpp.state.json
+api_key_file: D:/AIGC/runtimes/llama.cpp/b11146/inaba-local-llamacpp.api-key
+served_model_name: inaba-local-qwen
+host: 127.0.0.1
+port: 18081
+context_size: 8192
+gpu_layers: all

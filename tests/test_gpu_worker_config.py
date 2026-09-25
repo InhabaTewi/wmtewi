@@ -37,3 +37,19 @@ def test_worker_settings_require_service_token_and_bound_heartbeat_interval(monk
 
 def test_worker_settings_redact_service_token() -> None:
     assert "secret-token" not in repr(configured_settings())
+
+
+def test_worker_settings_restrict_enabled_local_model_to_loopback_and_requires_key(monkeypatch) -> None:
+    monkeypatch.delenv("INABA_LOCAL_LLM_API_KEY", raising=False)
+    with pytest.raises(ValidationError, match="INABA_LOCAL_LLM_API_KEY"):
+        configured_settings(local_llm_enabled=True)
+    with pytest.raises(ValidationError, match="INABA_LOCAL_LLM_BASE_URL"):
+        configured_settings(
+            local_llm_enabled=True,
+            local_llm_api_key="local-secret",
+            local_llm_base_url="http://0.0.0.0:18081/v1",
+        )
+
+    configured = configured_settings(local_llm_enabled=True, local_llm_api_key="local-secret")
+    assert "local-secret" not in repr(configured)
+    assert configured.local_llm_source_model == "Qwen/Qwen3.5-9B"

@@ -6,6 +6,7 @@ import pytest
 from apps.gpu_worker.client import CloudAuthenticationError, CloudUnavailableError
 from apps.gpu_worker.config import WorkerSettings
 from apps.gpu_worker.gpu_probe import GpuMetadata, GpuProbeError
+from apps.gpu_worker.local_model_client import LocalModelUnavailableError
 from apps.gpu_worker.runtime import WorkerRuntime
 from apps.gpu_worker.main import parse_args, run_worker
 from packages.schemas.worker import WorkerStatus
@@ -44,6 +45,20 @@ class FakeClient:
         self.closed = True
 
 
+class FakeLocalModelClient:
+    def __init__(self, result: bool | Exception) -> None:
+        self.result = result
+        self.closed = False
+
+    async def health(self) -> bool:
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
 def settings() -> WorkerSettings:
     return WorkerSettings(cloud_base_url="https://cloud.example", service_token="secret", _env_file=None)
 
@@ -74,6 +89,35 @@ async def test_runtime_stays_degraded_when_gpu_probe_fails() -> None:
 
     assert client.heartbeat_requests[0][1].status == WorkerStatus.DEGRADED
     assert client.heartbeat_requests[0][1].gpu_name is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_reports_local_model_metadata_only_when_healthy() -> None:
+    healthy_client = FakeClient()
+    runtime = WorkerRuntime(
+        settings(),
+        healthy_client,
+        FakeProbe(gpu()),
+        local_model_client=FakeLocalModelClient(True),
+    )
+    await runtime.run_once()
+    heartbeat = healthy_client.heartbeat_requests[0][1]
+    assert heartbeat.status == WorkerStatus.ONLINE
+    assert heartbeat.loaded_model == "Qwen/Qwen3.5-9B"
+    assert heartbeat.model_version == "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+    assert heartbeat.model_alias == "local-dev"
+
+    degraded_client = FakeClient()
+    runtime = WorkerRuntime(
+        settings(),
+        degraded_client,
+        FakeProbe(gpu()),
+        local_model_client=FakeLocalModelClient(LocalModelUnavailableError("down")),
+    )
+    await runtime.run_once()
+    heartbeat = degraded_client.heartbeat_requests[0][1]
+    assert heartbeat.status == WorkerStatus.DEGRADED
+    assert heartbeat.loaded_model is None
 
 
 @pytest.mark.asyncio

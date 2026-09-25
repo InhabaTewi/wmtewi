@@ -9,3 +9,4 @@ class WorkerState:
     status: WorkerStatus
     gpu: GpuMetadata | None
     gpu_error: str | None = None
+    local_model_healthy: bool = False

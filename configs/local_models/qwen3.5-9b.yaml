@@ -1,0 +1,13 @@
+model_id: qwen3.5-9b
+hf_repo: Qwen/Qwen3.5-9B
+revision: c202236235762e1c871ad0ccb60c8ee5ba337b9a
+served_model_name: inaba-local-qwen
+engine: vllm
+vllm_image: vllm/vllm-openai@sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90
+host: 127.0.0.1
+port: 18081
+max_model_len: 8192
+max_num_seqs: 2
+gpu_memory_utilization: 0.78
+dtype: auto
+enforce_eager: true

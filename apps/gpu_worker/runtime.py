@@ -11,6 +11,7 @@ from apps.gpu_worker.client import (
 )
 from apps.gpu_worker.config import WorkerSettings
 from apps.gpu_worker.gpu_probe import GpuProbe, GpuProbeError
+from apps.gpu_worker.local_model_client import LocalModelClient, LocalModelError
 from apps.gpu_worker.state import WorkerState
 from packages.schemas.worker import (
     WorkerCapability,
@@ -30,6 +31,7 @@ class WorkerRuntime:
         client: WorkerCloudClient,
         gpu_probe: GpuProbe,
         *,
+        local_model_client: LocalModelClient | None = None,
         sleeper: Sleep = asyncio.sleep,
         jitter: Callable[[], float] = random.random,
         logger: logging.Logger | None = None,
@@ -37,6 +39,7 @@ class WorkerRuntime:
         self.settings = settings
         self.client = client
         self.gpu_probe = gpu_probe
+        self.local_model_client = local_model_client
         self.sleeper = sleeper
         self.jitter = jitter
         self.logger = logger or logging.getLogger(__name__)
@@ -82,6 +85,8 @@ class WorkerRuntime:
 
     async def aclose(self) -> None:
         await self.client.aclose()
+        if self.local_model_client is not None:
+            await self.local_model_client.aclose()
 
     async def _probe_state(self) -> WorkerState:
         try:
@@ -95,7 +100,18 @@ class WorkerRuntime:
         if self._last_gpu_error is not None:
             self.logger.info("GPU probe recovered")
         self._last_gpu_error = None
-        return WorkerState(status=WorkerStatus.ONLINE, gpu=gpu)
+        if self.local_model_client is None:
+            return WorkerState(status=WorkerStatus.ONLINE, gpu=gpu)
+        try:
+            healthy = await self.local_model_client.health()
+        except LocalModelError as exc:
+            self.logger.warning("Local model probe degraded: %s", exc)
+            healthy = False
+        return WorkerState(
+            status=WorkerStatus.ONLINE if healthy else WorkerStatus.DEGRADED,
+            gpu=gpu,
+            local_model_healthy=healthy,
+        )
 
     def _register_request(self, state: WorkerState) -> WorkerRegisterRequest:
         return WorkerRegisterRequest(
@@ -107,13 +123,12 @@ class WorkerRuntime:
     def _heartbeat_request(self, state: WorkerState) -> WorkerHeartbeatRequest:
         return WorkerHeartbeatRequest(status=state.status, **self._metadata(state))
 
-    @staticmethod
-    def _metadata(state: WorkerState) -> dict:
+    def _metadata(self, state: WorkerState) -> dict:
         metadata = {
             "capabilities": [WorkerCapability.LLM_INFERENCE],
-            "loaded_model": None,
-            "model_version": None,
-            "model_alias": None,
+            "loaded_model": self.settings.local_llm_source_model if state.local_model_healthy else None,
+            "model_version": self.settings.local_llm_model_revision if state.local_model_healthy else None,
+            "model_alias": "local-dev" if state.local_model_healthy else None,
         }
         if state.gpu is not None:
             metadata.update(

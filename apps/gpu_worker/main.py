@@ -14,6 +14,7 @@ from apps.gpu_worker.client import (
 )
 from apps.gpu_worker.config import WorkerSettings
 from apps.gpu_worker.gpu_probe import NvidiaSmiGpuProbe
+from apps.gpu_worker.local_model_client import LocalModelClient
 from apps.gpu_worker.runtime import WorkerRuntime
 
 
@@ -32,7 +33,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def create_runtime(settings: WorkerSettings) -> WorkerRuntime:
     probe = NvidiaSmiGpuProbe(settings.gpu_index)
-    return WorkerRuntime(settings, WorkerCloudClient(settings), probe)
+    local_model_client = None
+    if settings.local_llm_enabled:
+        assert settings.local_llm_api_key is not None
+        local_model_client = LocalModelClient(
+            base_url=settings.local_llm_base_url,
+            api_key=settings.local_llm_api_key,
+            model_id=settings.local_llm_model,
+            connect_timeout=settings.http_connect_timeout,
+            read_timeout=settings.http_read_timeout,
+        )
+    return WorkerRuntime(settings, WorkerCloudClient(settings), probe, local_model_client=local_model_client)
 
 
 async def run_worker(args: argparse.Namespace, settings: WorkerSettings) -> int:
