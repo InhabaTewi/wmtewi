@@ -8,7 +8,7 @@ The preserved `vllm/vllm-openai` implementation ran in Docker Desktop's WSL2 bac
 
 ## Native llama.cpp
 
-**Status: `PASS_LOCAL_RUNTIME`**
+**Status: `LOCAL_INFERENCE_BASELINE = PASS`**
 
 - Source model: `Qwen/Qwen3.5-9B`
 - Hugging Face revision: `c202236235762e1c871ad0ccb60c8ee5ba337b9a`
@@ -25,3 +25,4 @@ The preserved `vllm/vllm-openai` implementation ran in Docker Desktop's WSL2 bac
 - Client adaptation: `chat_template_kwargs.enable_thinking=false` is required so Qwen's final answer reaches `message.content` instead of consuming the response budget in `reasoning_content`
 - Loaded GPU observation: RTX 5090 `32607 MiB` total, `19444 MiB` used, `12658 MiB` free
 - Benchmark after one warmup, three non-streaming requests: mean total latency `0.187s`, minimum `0.182s`, mean `42.82` completion tokens/s; TTFT is not measured because the benchmark does not use streaming
+- Cloud model metadata smoke: authenticated SSH tunnel health endpoints returned HTTP `200`; `home-5090-01` completed `ONLINE -> DEGRADED -> ONLINE` in the Cloud Registry without a Worker restart. The final Cloud record restored `Qwen/Qwen3.5-9B`, the pinned revision, and `local-dev` metadata.
