@@ -10,10 +10,12 @@ from packages.providers.base import (
 	ProviderUnavailableError,
 )
 from packages.providers.external_openai import ExternalOpenAIProvider
+from packages.providers.local_worker import LocalWorkerProvider
 from packages.providers.router import ProviderRouter
 
 __all__ = [
 	"ExternalOpenAIProvider",
+	"LocalWorkerProvider",
 	"LLMProvider",
 	"ProviderAuthenticationError",
 	"ProviderConfigurationError",

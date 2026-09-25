@@ -12,14 +12,23 @@ class RoutedProvider:
 
 
 class ProviderRouter:
-    def __init__(self, external: LLMProvider, local: LLMProvider | None = None) -> None:
+    def __init__(self, external: LLMProvider | None, local: LLMProvider | None = None, mode: str = "auto") -> None:
         self.external = external
         self.local = local
+        self.mode = mode
 
     async def select(self) -> RoutedProvider:
+        if self.mode == "cloud":
+            if self.external is not None and await self.external.health():
+                return RoutedProvider(provider=self.external, runtime_mode="api")
+            raise ProviderUnavailableError("Cloud LLM provider is unavailable")
+        if self.mode == "local_worker":
+            if self.local is not None and await self.local.health():
+                return RoutedProvider(provider=self.local, runtime_mode="local")
+            raise ProviderUnavailableError("Local Worker provider is unavailable")
         if self.local is not None and await self.local.health():
             return RoutedProvider(provider=self.local, runtime_mode="local")
-        if await self.external.health():
+        if self.external is not None and await self.external.health():
             return RoutedProvider(provider=self.external, runtime_mode="api")
         raise ProviderUnavailableError("No healthy LLM provider")
 

@@ -127,7 +127,7 @@ class InteractionTrace(TimestampedModel, Base):
 class Feedback(TimestampedModel, Base):
     __tablename__ = "feedback"
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    trace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("interaction_traces.id"), index=True)
+    trace_id: Mapped[uuid.UUID] = mapped_column(index=True)
     rating: Mapped[int | None] = mapped_column(Integer)
     corrected_response: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
@@ -189,3 +189,27 @@ class WorkerNode(TimestampedModel, Base):
     loaded_model: Mapped[str | None] = mapped_column(String(256))
     model_version: Mapped[str | None] = mapped_column(String(256))
     model_alias: Mapped[str | None] = mapped_column(String(128))
+
+
+class InferenceJob(TimestampedModel, Base):
+    __tablename__ = "inference_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    request_id: Mapped[uuid.UUID] = mapped_column(index=True)
+    trace_id: Mapped[uuid.UUID] = mapped_column(index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    target_worker_id: Mapped[str] = mapped_column(String(128), index=True)
+    model_alias: Mapped[str | None] = mapped_column(String(128))
+    model_version_requirement: Mapped[str | None] = mapped_column(String(256))
+    request_payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    result_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    error_message: Mapped[str | None] = mapped_column(String(512))
+    claimed_by_worker_id: Mapped[str | None] = mapped_column(String(128))
+    claim_token: Mapped[str | None] = mapped_column(String(256))
+    queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

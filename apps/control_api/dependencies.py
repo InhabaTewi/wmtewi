@@ -14,7 +14,7 @@ from packages.persistence.config import settings
 from packages.knowledge.embedding import ExternalOpenAIEmbeddingProvider
 from packages.knowledge.service import KnowledgeService
 from packages.persona.repository import PersonaRepository
-from packages.providers import ExternalOpenAIProvider, ProviderRouter
+from packages.providers import ExternalOpenAIProvider, LocalWorkerProvider, ProviderRouter
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -58,8 +58,17 @@ def is_valid_service_authorization(authorization: str | None) -> bool:
 
 
 def create_provider_router() -> ProviderRouter:
-    return ProviderRouter(
-        external=ExternalOpenAIProvider(
+    if settings.llm_provider_mode == "local_worker":
+        local = LocalWorkerProvider(
+            SessionLocal,
+            request_timeout_seconds=settings.local_worker_request_timeout_seconds,
+            lease_seconds=settings.local_worker_job_lease_seconds,
+            ttl_seconds=settings.local_worker_job_ttl_seconds,
+            result_poll_interval_seconds=settings.local_worker_result_poll_interval_seconds,
+        )
+        return ProviderRouter(external=None, local=local, mode="local_worker")
+
+    external = ExternalOpenAIProvider(
             base_url=settings.llm_base_url,
             api_key=settings.llm_api_key,
             model_id=settings.llm_model,
@@ -67,7 +76,7 @@ def create_provider_router() -> ProviderRouter:
             read_timeout=settings.llm_read_timeout,
             max_retries=settings.llm_max_retries,
         )
-    )
+    return ProviderRouter(external=external, mode="cloud")
 
 
 async def get_provider_router() -> AsyncGenerator[ProviderRouter, None]:
@@ -75,7 +84,10 @@ async def get_provider_router() -> AsyncGenerator[ProviderRouter, None]:
     try:
         yield router
     finally:
-        await router.external.aclose()
+        if router.external is not None:
+            await router.external.aclose()
+        if router.local is not None:
+            await router.local.aclose()
 
 
 def create_knowledge_service(session: Session) -> KnowledgeService:
@@ -131,11 +143,15 @@ def check_persona_readiness() -> bool:
 async def check_llm_readiness() -> ReadinessState:
     router = create_provider_router()
     try:
-        return (await router.external.health_status()).state
+        provider = router.local if router.mode == "local_worker" else router.external
+        return "healthy" if provider is not None and await provider.health() else "unavailable"
     except Exception:
         return "unavailable"
     finally:
-        await router.external.aclose()
+        if router.external is not None:
+            await router.external.aclose()
+        if router.local is not None:
+            await router.local.aclose()
 
 
 async def check_embedding_readiness() -> ReadinessState:

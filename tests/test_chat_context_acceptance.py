@@ -66,6 +66,7 @@ async def test_chat_combines_persona_matching_memory_and_knowledge(session) -> N
     joined_prompt = "\n".join(message["content"] for message in provider.messages)
 
     assert result.response.speech == "Context received."
+    assert [message["role"] for message in provider.messages].count("system") == 1
     assert "Unique persona instruction." in joined_prompt
     assert "User prefers jasmine tea." in joined_prompt
     assert "Jasmine tea is fragrant." in joined_prompt

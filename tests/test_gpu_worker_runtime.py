@@ -1,5 +1,6 @@
 import asyncio
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -8,6 +9,8 @@ from apps.gpu_worker.config import WorkerSettings
 from apps.gpu_worker.gpu_probe import GpuMetadata, GpuProbeError
 from apps.gpu_worker.local_model_client import LocalModelUnavailableError
 from apps.gpu_worker.runtime import WorkerRuntime
+from packages.schemas.chat import AgentResponse
+from packages.schemas.inference import InferenceErrorCode, InferenceJobClaim, InferenceJobPayload
 from apps.gpu_worker.main import parse_args, run_worker
 from packages.schemas.worker import WorkerStatus
 
@@ -57,6 +60,16 @@ class FakeLocalModelClient:
 
     async def aclose(self) -> None:
         self.closed = True
+
+
+class GeneratingLocalModelClient(FakeLocalModelClient):
+    def __init__(self) -> None:
+        super().__init__(True)
+        self.generate_calls = []
+
+    async def generate(self, messages):
+        self.generate_calls.append(messages)
+        return AgentResponse(speech="local answer")
 
 
 def settings() -> WorkerSettings:
@@ -184,3 +197,68 @@ async def test_shutdown_file_stops_detached_worker_gracefully(tmp_path, monkeypa
 
     assert await task == 0
     assert client.closed
+
+
+@pytest.mark.asyncio
+async def test_worker_completes_claimed_agent_response_job() -> None:
+    class JobClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.completed = []
+
+        async def complete_inference_job(self, job_id, request) -> None:
+            self.completed.append((job_id, request))
+
+    client = JobClient()
+    model_client = GeneratingLocalModelClient()
+    runtime = WorkerRuntime(settings(), client, FakeProbe(gpu()), local_model_client=model_client)
+    claim = InferenceJobClaim(
+        id=uuid4(),
+        request_id=uuid4(),
+        trace_id=uuid4(),
+        worker_id="home-5090-01",
+        claim_token="x" * 32,
+        lease_expires_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+        payload=InferenceJobPayload(
+            messages=[{"role": "user", "content": "Cloud-built prompt"}],
+            response_schema={"name": "AgentResponse", "schema": AgentResponse.model_json_schema()},
+        ),
+        model_alias="local-dev",
+        model_version_requirement="c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+    )
+
+    await runtime._execute_inference_job(claim)
+
+    assert model_client.generate_calls == [claim.payload.messages]
+    assert client.completed[0][1].result.structured_output["speech"] == "local answer"
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_claim_with_model_revision_mismatch() -> None:
+    class JobClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.failed = []
+
+        async def fail_inference_job(self, job_id, request) -> None:
+            self.failed.append((job_id, request))
+
+    client = JobClient()
+    model_client = GeneratingLocalModelClient()
+    runtime = WorkerRuntime(settings(), client, FakeProbe(gpu()), local_model_client=model_client)
+    claim = InferenceJobClaim(
+        id=uuid4(),
+        request_id=uuid4(),
+        trace_id=uuid4(),
+        worker_id="home-5090-01",
+        claim_token="x" * 32,
+        lease_expires_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+        payload=InferenceJobPayload(messages=[{"role": "user", "content": "prompt"}], response_schema={"name": "AgentResponse"}),
+        model_alias="local-dev",
+        model_version_requirement="different-revision",
+    )
+
+    await runtime._execute_inference_job(claim)
+
+    assert model_client.generate_calls == []
+    assert client.failed[0][1].error_code == InferenceErrorCode.MODEL_MISMATCH

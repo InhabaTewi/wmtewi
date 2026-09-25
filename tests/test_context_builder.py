@@ -28,6 +28,8 @@ def test_context_messages_follow_required_order(session) -> None:
 
     messages = ContextBuilder.to_messages(ContextBuilder(session).build(event, "api"), event)
 
+    assert messages[0]["role"] == "system"
     assert "Persona instructions." in messages[0]["content"]
-    assert messages[1]["content"] == SAFETY_TOOL_POLICY
+    assert SAFETY_TOOL_POLICY in messages[0]["content"]
+    assert sum(message["role"] == "system" for message in messages) == 1
     assert messages[-1] == {"role": "user", "content": "Hello"}

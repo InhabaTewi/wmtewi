@@ -24,10 +24,12 @@ class WorkerSettings(BaseSettings):
     local_llm_api_key: SecretStr | None = None
     local_llm_model: str = Field(default="inaba-local-qwen", min_length=1, max_length=256)
     local_llm_source_model: str = Field(default="Qwen/Qwen3.5-9B", min_length=3, max_length=256)
+    local_llm_model_alias: str = Field(default="local-dev", min_length=1, max_length=128)
     local_llm_model_revision: str = Field(
         default="c202236235762e1c871ad0ccb60c8ee5ba337b9a",
         pattern=r"^[0-9a-f]{40}$",
     )
+    inference_job_poll_interval_seconds: float = Field(default=1.0, gt=0, le=15)
 
     @field_validator("cloud_base_url")
     @classmethod

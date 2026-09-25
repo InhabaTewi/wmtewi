@@ -20,12 +20,18 @@ class Settings(BaseSettings):
     database_connect_timeout: int = Field(default=10, gt=0)
 
     llm_provider: str = "openai-compatible"
+    llm_provider_mode: Literal["cloud", "local_worker"] = "cloud"
     llm_base_url: str | None = None
     llm_api_key: SecretStr | None = None
     llm_model: str = "gpt-4o-mini"
     llm_connect_timeout: float = Field(default=10.0, gt=0)
     llm_read_timeout: float = Field(default=60.0, gt=0)
     llm_max_retries: int = Field(default=1, ge=0, le=2)
+    local_worker_request_timeout_seconds: float = Field(default=120.0, gt=0, le=600)
+    local_worker_job_lease_seconds: int = Field(default=150, gt=0, le=600)
+    local_worker_job_ttl_seconds: int = Field(default=180, gt=0, le=900)
+    local_worker_result_poll_interval_seconds: float = Field(default=0.2, gt=0, le=2)
+    local_worker_job_retention_hours: int = Field(default=24, gt=0, le=720)
 
     embedding_provider: str = "openai-compatible"
     embedding_base_url: str | None = None

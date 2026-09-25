@@ -10,6 +10,13 @@ from packages.schemas.worker import (
     WorkerRegisterRequest,
     WorkerRegisterResponse,
 )
+from packages.schemas.inference import (
+    InferenceJobClaim,
+    InferenceJobClaimRequest,
+    InferenceJobCompleteRequest,
+    InferenceJobFailRequest,
+    InferenceJobInfo,
+)
 
 
 class CloudClientError(RuntimeError):
@@ -68,7 +75,25 @@ class WorkerCloudClient:
         response = await self._post(path, request.model_dump(mode="json"))
         return self._validate_response(response, WorkerHeartbeatResponse)
 
-    async def _post(self, path: str, payload: dict) -> httpx.Response:
+    async def claim_inference_job(self, worker_id: str) -> InferenceJobClaim | None:
+        response = await self._post(
+            "api/inference/jobs/claim",
+            InferenceJobClaimRequest(worker_id=worker_id).model_dump(mode="json"),
+            allowed_statuses={204},
+        )
+        if response.status_code == 204:
+            return None
+        return self._validate_response(response, InferenceJobClaim)
+
+    async def complete_inference_job(self, job_id: str, request: InferenceJobCompleteRequest) -> InferenceJobInfo:
+        response = await self._post(f"api/inference/jobs/{quote(job_id, safe='')}/complete", request.model_dump(mode="json"))
+        return self._validate_response(response, InferenceJobInfo)
+
+    async def fail_inference_job(self, job_id: str, request: InferenceJobFailRequest) -> InferenceJobInfo:
+        response = await self._post(f"api/inference/jobs/{quote(job_id, safe='')}/fail", request.model_dump(mode="json"))
+        return self._validate_response(response, InferenceJobInfo)
+
+    async def _post(self, path: str, payload: dict, *, allowed_statuses: set[int] | None = None) -> httpx.Response:
         try:
             response = await self._client.post(self._url(path), json=payload)
         except httpx.TimeoutException as exc:
@@ -81,7 +106,7 @@ class WorkerCloudClient:
             raise CloudProtocolError("Cloud Worker Registry endpoint is unavailable")
         if response.status_code in {502, 503, 504}:
             raise CloudUnavailableError("Cloud is temporarily unavailable")
-        if not response.is_success:
+        if response.status_code not in (allowed_statuses or set()) and not response.is_success:
             raise CloudResponseError(f"Cloud returned HTTP {response.status_code}")
         return response
 

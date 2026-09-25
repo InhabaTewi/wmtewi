@@ -52,20 +52,18 @@ class ContextBuilder:
 
     @staticmethod
     def to_messages(context: AgentContext, event: ChatEvent) -> list[dict[str, str]]:
-        messages = [
-            {
-                "role": "system",
-                "content": f"Persona version: {context.persona_version}\n{context.persona_system_prompt}",
-            },
-            {"role": "system", "content": SAFETY_TOOL_POLICY},
+        system_sections = [
+            f"Persona version: {context.persona_version}\n{context.persona_system_prompt}",
+            SAFETY_TOOL_POLICY,
+            *(f"Memory: {memory.content}" for memory in context.memories),
+            *(f"Knowledge: {chunk.content}" for chunk in context.knowledge_chunks),
         ]
-        messages.extend({"role": "system", "content": f"Memory: {memory.content}"} for memory in context.memories)
-        messages.extend({"role": "system", "content": f"Knowledge: {chunk.content}"} for chunk in context.knowledge_chunks)
         if context.runtime_mode == "api":
-            messages.extend(
-                {"role": "system", "content": f"Example input: {example.input_text}\nExample output: {example.output_text}"}
+            system_sections.extend(
+                f"Example input: {example.input_text}\nExample output: {example.output_text}"
                 for example in context.behavior_examples
             )
+        messages = [{"role": "system", "content": "\n\n".join(system_sections)}]
         messages.extend(context.recent_messages)
         messages.append({"role": "user", "content": event.text})
         return messages

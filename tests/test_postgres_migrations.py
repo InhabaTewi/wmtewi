@@ -22,6 +22,7 @@ EXPECTED_TABLES = {
     "knowledge_embeddings",
     "interaction_traces",
     "worker_nodes",
+    "inference_jobs",
 }
 VECTOR_INDEX_NAME = "ix_knowledge_embeddings_embedding_hnsw_cosine"
 WORKER_COLUMNS = {
@@ -63,7 +64,7 @@ def assert_postgres_schema(postgres_url: str) -> None:
     try:
         with engine.connect() as connection:
             assert connection.scalar(text("SELECT extversion FROM pg_extension WHERE extname = 'vector'"))
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260924_0005"
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260925_0006"
             assert EXPECTED_TABLES <= set(inspect(connection).get_table_names())
             assert WORKER_COLUMNS <= {column["name"] for column in inspect(connection).get_columns("worker_nodes")}
             embedding_type = connection.scalar(
@@ -93,12 +94,12 @@ def test_postgres_alembic_schema_is_repeatable(postgres_url: str) -> None:
     run_alembic("upgrade", "head", postgres_url)
     assert_postgres_schema(postgres_url)
 
-    run_alembic("downgrade", "20260922_0004", postgres_url)
+    run_alembic("downgrade", "20260924_0005", postgres_url)
     engine = create_engine(postgres_url)
     try:
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260922_0004"
-            assert not WORKER_COLUMNS & {column["name"] for column in inspect(connection).get_columns("worker_nodes")}
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260924_0005"
+            assert "inference_jobs" not in set(inspect(connection).get_table_names())
     finally:
         engine.dispose()
     run_alembic("upgrade", "head", postgres_url)

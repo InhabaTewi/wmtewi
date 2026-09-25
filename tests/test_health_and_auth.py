@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from apps.control_api import dependencies
 from apps.control_api.main import app
 from packages.persona.repository import PersonaRepository
+from packages.providers.router import ProviderRouter
 from packages.schemas.persona import PersonaPackage
 
 
@@ -91,6 +92,24 @@ def test_health_ready_is_anonymous_and_redacts_failures(monkeypatch) -> None:
     assert response.status_code == 503
     assert response.json()["status"] == "not_ready"
     assert "super-secret-token" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_local_worker_readiness_does_not_require_external_provider(monkeypatch) -> None:
+    class LocalProvider:
+        async def health(self) -> bool:
+            return True
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        dependencies,
+        "create_provider_router",
+        lambda: ProviderRouter(external=None, local=LocalProvider(), mode="local_worker"),
+    )
+
+    assert await dependencies.check_llm_readiness() == "healthy"
 
 
 def test_readiness_state_requires_database_persona_and_all_providers(monkeypatch) -> None:

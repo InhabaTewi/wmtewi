@@ -114,3 +114,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 4
     except KeyboardInterrupt:
         return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

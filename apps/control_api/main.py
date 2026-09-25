@@ -8,11 +8,19 @@ from sqlalchemy.orm import Session
 from apps.control_api import dependencies
 from apps.control_api.dependencies import get_knowledge_service, get_provider_router, get_session
 from packages.chat.service import ChatService
+from packages.inference_jobs.service import InferenceJobLeaseError, InferenceJobNotFoundError, InferenceJobService
 from packages.knowledge.service import KnowledgeNotFoundError, KnowledgeService
 from packages.memory.service import MemoryNotFoundError, MemoryService
 from packages.persona.repository import PersonaRepository
 from packages.providers import ProviderRouter, ProviderUnavailableError
 from packages.schemas.chat import ChatRequest, ChatResult
+from packages.schemas.inference import (
+    InferenceJobClaim,
+    InferenceJobClaimRequest,
+    InferenceJobCompleteRequest,
+    InferenceJobFailRequest,
+    InferenceJobInfo,
+)
 from packages.schemas.knowledge import KnowledgeDocumentCreate, KnowledgeDocumentRead, KnowledgeSearchResponse
 from packages.schemas.memory import (
     MemoryAtom,
@@ -22,6 +30,7 @@ from packages.schemas.memory import (
 )
 from packages.schemas.persona import PersonaVersionRead
 from packages.schemas.worker import (
+    WorkerCapability,
     WorkerHeartbeatRequest,
     WorkerHeartbeatResponse,
     WorkerInfo,
@@ -213,3 +222,53 @@ def get_worker(worker_id: str, session: Session = Depends(get_session)) -> Worke
         return WorkerRegistryService(session).get(worker_id)
     except WorkerNotFoundError:
         raise HTTPException(status_code=404, detail="Worker not found") from None
+
+
+@app.post("/api/inference/jobs/claim", response_model=InferenceJobClaim)
+def claim_inference_job(
+    request: InferenceJobClaimRequest, session: Session = Depends(get_session)
+) -> InferenceJobClaim | Response:
+    try:
+        worker = WorkerRegistryService(session).get(request.worker_id)
+    except WorkerNotFoundError:
+        return Response(status_code=204)
+    if (
+        worker.effective_status.value != "ONLINE"
+        or WorkerCapability.LLM_INFERENCE not in worker.capabilities
+        or worker.loaded_model is None
+    ):
+        return Response(status_code=204)
+    job = InferenceJobService(session).claim(request.worker_id)
+    if job is None:
+        session.commit()
+        return Response(status_code=204)
+    session.commit()
+    return job
+
+
+@app.post("/api/inference/jobs/{job_id}/complete", response_model=InferenceJobInfo)
+def complete_inference_job(
+    job_id: UUID, request: InferenceJobCompleteRequest, session: Session = Depends(get_session)
+) -> InferenceJobInfo:
+    try:
+        job = InferenceJobService(session).complete(job_id, request)
+    except InferenceJobNotFoundError:
+        raise HTTPException(status_code=404, detail="Inference job not found") from None
+    except InferenceJobLeaseError:
+        raise HTTPException(status_code=409, detail="Inference job lease is invalid") from None
+    session.commit()
+    return job
+
+
+@app.post("/api/inference/jobs/{job_id}/fail", response_model=InferenceJobInfo)
+def fail_inference_job(
+    job_id: UUID, request: InferenceJobFailRequest, session: Session = Depends(get_session)
+) -> InferenceJobInfo:
+    try:
+        job = InferenceJobService(session).fail(job_id, request)
+    except InferenceJobNotFoundError:
+        raise HTTPException(status_code=404, detail="Inference job not found") from None
+    except InferenceJobLeaseError:
+        raise HTTPException(status_code=409, detail="Inference job lease is invalid") from None
+    session.commit()
+    return job
