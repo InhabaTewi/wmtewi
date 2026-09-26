@@ -3,6 +3,8 @@ from packages.providers.base import (
 	ProviderAuthenticationError,
 	ProviderConfigurationError,
 	ProviderError,
+	ProviderFailure,
+	ProviderFailureKind,
 	ProviderHealth,
 	ProviderRateLimitError,
 	ProviderResponseError,
@@ -10,6 +12,7 @@ from packages.providers.base import (
 	ProviderUnavailableError,
 )
 from packages.providers.external_openai import ExternalOpenAIProvider
+from packages.providers.failover import FailoverDecision, FailoverPolicy
 from packages.providers.local_worker import LocalWorkerProvider
 from packages.providers.router import ProviderRouter
 
@@ -20,9 +23,13 @@ __all__ = [
 	"ProviderAuthenticationError",
 	"ProviderConfigurationError",
 	"ProviderError",
+	"ProviderFailure",
+	"ProviderFailureKind",
 	"ProviderHealth",
 	"ProviderRateLimitError",
 	"ProviderResponseError",
+	"FailoverDecision",
+	"FailoverPolicy",
 	"ProviderRouter",
 	"ProviderTimeoutError",
 	"ProviderUnavailableError",
