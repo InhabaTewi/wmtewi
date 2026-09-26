@@ -8,6 +8,7 @@ from packages.context_builder.builder import ContextBuilder
 from packages.knowledge.service import KnowledgeService
 from packages.memory.service import MemoryService
 from packages.persistence.models import InteractionTrace, Message, SessionRecord
+from packages.providers.base import ProviderError
 from packages.providers.router import ProviderRouter
 from packages.schemas.chat import AgentResponse, ChatEvent, ChatRequest, ChatResult
 from packages.schemas.memory import MemoryCandidateCreate
@@ -45,9 +46,16 @@ class ChatService:
             knowledge_chunks,
         )
         started_at = perf_counter()
-        response, route = await self.router.generate(
-            ContextBuilder.to_messages(context, event), AgentResponse, str(trace_id)
-        )
+        try:
+            response, route = await self.router.generate(
+                ContextBuilder.to_messages(context, event), AgentResponse, str(trace_id)
+            )
+        except ProviderError as exc:
+            trace_metadata = getattr(exc, "failover_trace_metadata", None)
+            if trace_metadata is not None:
+                self._persist_failure_trace(event, context, trace_metadata, request.persona_id)
+                self.session.commit()
+            raise
         latency_ms = round((perf_counter() - started_at) * 1000)
         self._persist(event, context, response, route, latency_ms, request.persona_id)
         self.session.commit()
@@ -106,6 +114,24 @@ class ChatService:
                     "model_id": route.provider.model_id,
                     "response": response.model_dump(mode="json"),
                     "latency_ms": latency_ms,
+                    **(route.trace_metadata or {}),
+                },
+            )
+        )
+
+    def _persist_failure_trace(self, event, context, trace_metadata: dict[str, object], persona_id: str) -> None:
+        self.session.add(
+            InteractionTrace(
+                id=event.trace_id,
+                event_id=event.event_id,
+                payload={
+                    "trace_id": str(event.trace_id),
+                    "event_id": str(event.event_id),
+                    "persona_version": context.persona_version,
+                    "runtime_mode": "api",
+                    "provider": trace_metadata["final_provider"],
+                    "persona_id": persona_id,
+                    **trace_metadata,
                 },
             )
         )

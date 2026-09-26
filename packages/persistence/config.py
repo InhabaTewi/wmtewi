@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     database_connect_timeout: int = Field(default=10, gt=0)
 
     llm_provider: str = "openai-compatible"
-    llm_provider_mode: Literal["cloud", "local_worker"] = "cloud"
+    llm_provider_mode: Literal["cloud", "local_worker", "prefer_local_with_cloud_fallback"] = "cloud"
     llm_base_url: str | None = None
     llm_api_key: SecretStr | None = None
     llm_model: str = "gpt-4o-mini"

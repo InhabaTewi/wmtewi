@@ -22,11 +22,15 @@ class FakeProvider:
 
 
 @pytest.mark.asyncio
-async def test_unhealthy_local_routes_to_external_api() -> None:
+async def test_cloud_mode_uses_external_api_without_local() -> None:
     external = FakeProvider("api", healthy=True)
     local = FakeProvider("local", healthy=False)
 
-    response, route = await ProviderRouter(external=external, local=local).generate([], Reply, "trace")
+    response, route = await ProviderRouter(
+        external=external,
+        local=local,
+        mode="cloud",
+    ).generate([], Reply, "trace")
 
     assert route.runtime_mode == "api"
     assert response.text == "api"
@@ -37,7 +41,11 @@ async def test_healthy_local_routes_locally() -> None:
     external = FakeProvider("api", healthy=True)
     local = FakeProvider("local", healthy=True)
 
-    response, route = await ProviderRouter(external=external, local=local).generate([], Reply, "trace")
+    response, route = await ProviderRouter(
+        external=external,
+        local=local,
+        mode="prefer_local_with_cloud_fallback",
+    ).generate([], Reply, "trace")
 
     assert route.runtime_mode == "local"
     assert response.text == "local"

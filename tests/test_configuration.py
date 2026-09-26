@@ -12,6 +12,8 @@ from apps.control_api.dependencies import (
     get_provider_router,
 )
 from packages.persistence.config import DEFAULT_EMBEDDING_DIMENSION, Settings
+from packages.providers.failover import FailoverPolicy
+from packages.providers.local_cloud_fallback import PreferLocalWithCloudFallbackProvider
 
 
 def test_development_defaults_preserve_local_configuration(monkeypatch) -> None:
@@ -72,6 +74,27 @@ def test_llm_and_embedding_factories_use_independent_credentials(monkeypatch, se
     assert router.external.api_key == "llm-secret"
     assert knowledge.embedding_provider.base_url == "https://embedding.example/v1"
     assert knowledge.embedding_provider.api_key == "embedding-secret"
+
+
+def test_prefer_local_mode_constructs_both_providers(monkeypatch) -> None:
+    configured = Settings(
+        app_env="test",
+        llm_provider_mode="prefer_local_with_cloud_fallback",
+        llm_base_url="https://llm.example/v1",
+        llm_api_key="llm-secret",
+        _env_file=None,
+    )
+    monkeypatch.setattr("apps.control_api.dependencies.settings", configured)
+
+    router = create_provider_router()
+
+    assert router.mode == "prefer_local_with_cloud_fallback"
+    assert router.local is not None
+    assert router.external is not None
+    assert isinstance(
+        PreferLocalWithCloudFallbackProvider(router.local, router.external, FailoverPolicy()),
+        PreferLocalWithCloudFallbackProvider,
+    )
 
 
 def test_settings_repr_redacts_secrets() -> None:

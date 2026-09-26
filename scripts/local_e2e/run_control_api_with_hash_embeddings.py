@@ -14,7 +14,12 @@ async def get_local_e2e_knowledge_service(
     yield KnowledgeService(session, HashEmbeddingProvider())
 
 
+async def get_local_e2e_embedding_readiness() -> str:
+    return "healthy"
+
+
 app.dependency_overrides[get_knowledge_service] = get_local_e2e_knowledge_service
+dependencies.check_embedding_readiness = get_local_e2e_embedding_readiness
 
 
 if __name__ == "__main__":

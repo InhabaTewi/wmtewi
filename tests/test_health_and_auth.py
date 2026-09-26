@@ -112,6 +112,35 @@ async def test_local_worker_readiness_does_not_require_external_provider(monkeyp
     assert await dependencies.check_llm_readiness() == "healthy"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("local_healthy", "cloud_healthy", "expected"),
+    [(True, True, "healthy"), (True, False, "degraded"), (False, True, "degraded"), (False, False, "unavailable")],
+)
+async def test_prefer_local_readiness_accepts_either_provider(monkeypatch, local_healthy, cloud_healthy, expected) -> None:
+    class Provider:
+        def __init__(self, healthy: bool) -> None:
+            self.healthy = healthy
+
+        async def health(self) -> bool:
+            return self.healthy
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        dependencies,
+        "create_provider_router",
+        lambda: ProviderRouter(
+            external=Provider(cloud_healthy),
+            local=Provider(local_healthy),
+            mode="prefer_local_with_cloud_fallback",
+        ),
+    )
+
+    assert await dependencies.check_llm_readiness() == expected
+
+
 def test_readiness_state_requires_database_persona_and_all_providers(monkeypatch) -> None:
     async def healthy():
         return "healthy"
