@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
 from uuid import uuid4
@@ -15,6 +16,12 @@ from packages.schemas.worker import WorkerCapability, WorkerInfo, WorkerStatus
 from packages.worker_nodes.service import WorkerRegistryService
 
 
+@dataclass(frozen=True)
+class LocalWorkerExecution:
+    response: BaseModel
+    timing_metadata: dict[str, int | None]
+
+
 class LocalWorkerProvider:
     name = "local-worker"
     model_id = "local-worker"
@@ -23,13 +30,15 @@ class LocalWorkerProvider:
         self,
         session_factory: sessionmaker[Session],
         *,
-        request_timeout_seconds: float,
+        claim_timeout_seconds: float,
+        inference_timeout_seconds: float,
         lease_seconds: int,
         ttl_seconds: int,
         result_poll_interval_seconds: float,
     ) -> None:
         self.session_factory = session_factory
-        self.request_timeout_seconds = request_timeout_seconds
+        self.claim_timeout_seconds = claim_timeout_seconds
+        self.inference_timeout_seconds = inference_timeout_seconds
         self.lease_seconds = lease_seconds
         self.ttl_seconds = ttl_seconds
         self.result_poll_interval_seconds = result_poll_interval_seconds
@@ -64,12 +73,31 @@ class LocalWorkerProvider:
         response_schema: type[BaseModel],
         trace_id: str,
     ) -> BaseModel:
+        return (await self.generate_with_timing(messages, response_schema, trace_id)).response
+
+    async def generate_with_timing(
+        self,
+        messages: list[dict[str, str]],
+        response_schema: type[BaseModel],
+        trace_id: str,
+    ) -> LocalWorkerExecution:
+        provider_started = perf_counter()
+        selection_started = perf_counter()
         try:
             worker = await asyncio.to_thread(self._select_worker)
         except SQLAlchemyError as exc:
-            raise self._failure(ProviderFailureKind.STORAGE_ERROR, "Local Worker provider is unavailable", exc) from exc
+            raise self._failure(
+                ProviderFailureKind.STORAGE_ERROR,
+                "Local Worker provider is unavailable",
+                exc,
+                timing_metadata={"local_worker_selection_ms": self._elapsed_ms(selection_started)},
+            ) from exc
+        selection_ms = self._elapsed_ms(selection_started)
         if worker is None:
-            raise await self.availability_failure()
+            failure = await self.availability_failure()
+            failure.trace_metadata["local_worker_selection_ms"] = selection_ms
+            raise failure
+        job_create_started = perf_counter()
         try:
             job_id = await asyncio.to_thread(
                 self._create_job,
@@ -79,31 +107,68 @@ class LocalWorkerProvider:
                 response_schema,
             )
         except SQLAlchemyError as exc:
-            raise self._failure(ProviderFailureKind.STORAGE_ERROR, "Local Worker provider is unavailable", exc) from exc
-        started = perf_counter()
-        while perf_counter() - started < self.request_timeout_seconds:
+            raise self._failure(
+                ProviderFailureKind.STORAGE_ERROR,
+                "Local Worker provider is unavailable",
+                exc,
+                timing_metadata={
+                    "local_worker_selection_ms": selection_ms,
+                    "job_create_ms": self._elapsed_ms(job_create_started),
+                },
+            ) from exc
+        claim_started = perf_counter()
+        inference_started: float | None = None
+        timing_metadata: dict[str, int | None] = {
+            "local_worker_selection_ms": selection_ms,
+            "job_create_ms": self._elapsed_ms(job_create_started),
+            "job_queue_ms": None,
+            "job_claim_ms": None,
+            "local_inference_ms": None,
+            "local_result_commit_ms": None,
+        }
+        while True:
             try:
                 job = await asyncio.to_thread(self._get_job, job_id)
             except SQLAlchemyError as exc:
                 raise self._failure(ProviderFailureKind.STORAGE_ERROR, "Local Worker provider is unavailable", exc) from exc
             if job.status == InferenceJobStatus.SUCCEEDED:
                 assert job.result is not None
+                if job.result.inference_ms is not None:
+                    timing_metadata["local_inference_ms"] = job.result.inference_ms
+                timing_metadata["total_provider_ms"] = self._elapsed_ms(provider_started)
                 try:
-                    return response_schema.model_validate(job.result.structured_output)
+                    return LocalWorkerExecution(
+                        response=response_schema.model_validate(job.result.structured_output),
+                        timing_metadata=timing_metadata,
+                    )
                 except ValidationError as exc:
                     raise self._failure(
                         ProviderFailureKind.INVALID_STRUCTURED_RESULT,
                         "Local Worker returned invalid structured output",
                         exc,
+                        timing_metadata=timing_metadata,
                     ) from exc
             if job.status in {InferenceJobStatus.FAILED, InferenceJobStatus.EXPIRED}:
-                raise self._failure_for_job(job.error_code, job.error_message)
+                raise self._failure_for_job(job.error_code, job.error_message, timing_metadata)
+            if job.status == InferenceJobStatus.CLAIMED and inference_started is None:
+                inference_started = perf_counter()
+                timing_metadata["job_queue_ms"] = self._elapsed_ms(claim_started)
+            timeout_seconds = self.inference_timeout_seconds if inference_started is not None else self.claim_timeout_seconds
+            started = inference_started if inference_started is not None else claim_started
+            if perf_counter() - started >= timeout_seconds:
+                break
             await asyncio.sleep(self.result_poll_interval_seconds)
         try:
             await asyncio.to_thread(self._expire_job, job_id)
         except SQLAlchemyError as exc:
-            raise self._failure(ProviderFailureKind.STORAGE_ERROR, "Local Worker provider is unavailable", exc) from exc
-        raise self._failure(ProviderFailureKind.JOB_QUEUE_TIMEOUT, "Local inference job timed out")
+            raise self._failure(
+                ProviderFailureKind.STORAGE_ERROR,
+                "Local Worker provider is unavailable",
+                exc,
+                timing_metadata=timing_metadata,
+            ) from exc
+        kind = ProviderFailureKind.LOCAL_INFERENCE_TIMEOUT if inference_started is not None else ProviderFailureKind.JOB_QUEUE_TIMEOUT
+        raise self._failure(kind, "Local inference job timed out", timing_metadata=timing_metadata)
 
     async def aclose(self) -> None:
         return None
@@ -128,6 +193,7 @@ class LocalWorkerProvider:
         self,
         error_code: InferenceErrorCode | None,
         _error_message: str | None,
+        timing_metadata: dict[str, int | None] | None = None,
     ) -> ProviderFailure:
         kind = {
             InferenceErrorCode.WORKER_UNAVAILABLE: ProviderFailureKind.WORKER_UNAVAILABLE,
@@ -138,15 +204,26 @@ class LocalWorkerProvider:
             InferenceErrorCode.INVALID_RESULT: ProviderFailureKind.INVALID_STRUCTURED_RESULT,
             InferenceErrorCode.MODEL_MISMATCH: ProviderFailureKind.MODEL_MISMATCH,
         }.get(error_code, ProviderFailureKind.LOCAL_INFERENCE_ERROR)
-        return self._failure(kind, "Local inference job failed")
+        return self._failure(kind, "Local inference job failed", timing_metadata=timing_metadata)
 
     def _failure(
         self,
         kind: ProviderFailureKind,
         safe_message: str,
         cause: Exception | None = None,
+        timing_metadata: dict[str, int | None] | None = None,
     ) -> ProviderFailure:
-        return ProviderFailure(kind=kind, provider=self.name, safe_message=safe_message, cause=cause)
+        return ProviderFailure(
+            kind=kind,
+            provider=self.name,
+            safe_message=safe_message,
+            cause=cause,
+            trace_metadata=timing_metadata,
+        )
+
+    @staticmethod
+    def _elapsed_ms(started: float) -> int:
+        return round((perf_counter() - started) * 1000)
 
     def _create_job(
         self,

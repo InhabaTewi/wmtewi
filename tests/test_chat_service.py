@@ -56,6 +56,11 @@ async def test_chat_persists_trace_and_routes_memory_candidates_through_service(
     assert trace is not None
     assert trace.payload["provider"] == "fake-api"
     assert trace.payload["response"]["speech"] == "Hello."
+    assert trace.payload["timing"]["memory_retrieval_ms"] is None
+    assert isinstance(trace.payload["timing"]["knowledge_retrieval_ms"], int)
+    assert isinstance(trace.payload["timing"]["context_build_ms"], int)
+    assert isinstance(trace.payload["timing"]["total_chat_ms"], int)
+    assert "Hi" not in trace.payload["timing"].values()
     memory = session.scalar(select(MemoryAtomRecord).where(MemoryAtomRecord.content == "likes tea"))
     assert memory is not None
     assert memory.subject_id == "u-1"

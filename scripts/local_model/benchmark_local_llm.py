@@ -11,9 +11,13 @@ def main() -> int:
     parser.add_argument("--base-url", default="http://127.0.0.1:18081/v1")
     parser.add_argument("--model", default="inaba-local-qwen")
     parser.add_argument("--api-key", default=os.environ.get("INABA_LOCAL_LLM_API_KEY"))
+    parser.add_argument("--warmup-runs", type=int, default=1)
+    parser.add_argument("--runs", type=int, default=10)
     args = parser.parse_args()
     if not args.api_key:
         parser.error("set INABA_LOCAL_LLM_API_KEY or pass --api-key")
+    if args.warmup_runs < 0 or args.runs < 1:
+        parser.error("--warmup-runs must be non-negative and --runs must be positive")
 
     payload = {
         "model": args.model,
@@ -24,10 +28,11 @@ def main() -> int:
     }
     headers = {"Authorization": f"Bearer {args.api_key}"}
     with httpx.Client(base_url=args.base_url.rstrip("/"), headers=headers, timeout=120) as client:
-        response = client.post("/chat/completions", json=payload)
-        response.raise_for_status()
+        for _ in range(args.warmup_runs):
+            response = client.post("/chat/completions", json=payload)
+            response.raise_for_status()
         measurements = []
-        for run in range(1, 4):
+        for run in range(1, args.runs + 1):
             started = time.perf_counter()
             response = client.post("/chat/completions", json=payload)
             response.raise_for_status()
@@ -44,7 +49,7 @@ def main() -> int:
     durations = [measurement[0] for measurement in measurements]
     throughputs = [measurement[2] for measurement in measurements]
     print(
-        f"runs=3 mean_total_seconds={statistics.mean(durations):.3f} min_total_seconds={min(durations):.3f} "
+        f"runs={args.runs} warmup_runs={args.warmup_runs} mean_total_seconds={statistics.mean(durations):.3f} min_total_seconds={min(durations):.3f} "
         f"mean_tokens_per_second={statistics.mean(throughputs):.2f} ttft=not_measured_non_streaming"
     )
     return 0

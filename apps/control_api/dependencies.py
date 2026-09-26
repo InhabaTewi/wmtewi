@@ -62,7 +62,8 @@ def create_provider_router() -> ProviderRouter:
     if settings.llm_provider_mode == "local_worker":
         local = LocalWorkerProvider(
             SessionLocal,
-            request_timeout_seconds=settings.local_worker_request_timeout_seconds,
+            claim_timeout_seconds=settings.local_job_claim_timeout_seconds,
+            inference_timeout_seconds=settings.local_inference_timeout_seconds,
             lease_seconds=settings.local_worker_job_lease_seconds,
             ttl_seconds=settings.local_worker_job_ttl_seconds,
             result_poll_interval_seconds=settings.local_worker_result_poll_interval_seconds,
@@ -80,7 +81,8 @@ def create_provider_router() -> ProviderRouter:
     if settings.llm_provider_mode == "prefer_local_with_cloud_fallback":
         local = LocalWorkerProvider(
             SessionLocal,
-            request_timeout_seconds=settings.local_worker_request_timeout_seconds,
+            claim_timeout_seconds=settings.local_job_claim_timeout_seconds,
+            inference_timeout_seconds=settings.local_inference_timeout_seconds,
             lease_seconds=settings.local_worker_job_lease_seconds,
             ttl_seconds=settings.local_worker_job_ttl_seconds,
             result_poll_interval_seconds=settings.local_worker_result_poll_interval_seconds,

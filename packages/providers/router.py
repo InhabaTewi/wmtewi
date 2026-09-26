@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from packages.providers.base import LLMProvider, ProviderFailure, ProviderUnavailableError
 from packages.providers.failover import FailoverPolicy
 from packages.providers.local_cloud_fallback import PreferLocalWithCloudFallbackProvider
+from packages.providers.local_worker import LocalWorkerProvider
 
 
 logger = logging.getLogger(__name__)
@@ -55,14 +56,29 @@ class ProviderRouter:
         messages: list[dict[str, str]],
         response_schema: type[BaseModel],
         trace_id: str,
+        route: RoutedProvider | None = None,
     ) -> tuple[BaseModel, RoutedProvider]:
-        route = await self.select()
+        route = route or await self.select()
         if isinstance(route.provider, PreferLocalWithCloudFallbackProvider):
             execution = await route.provider.generate_execution(messages, response_schema, trace_id)
             return execution.response, RoutedProvider(
                 provider=execution.final_provider,
                 runtime_mode=execution.runtime_mode,
                 trace_metadata=execution.trace_metadata,
+            )
+        if isinstance(route.provider, LocalWorkerProvider):
+            execution = await route.provider.generate_with_timing(messages, response_schema, trace_id)
+            return execution.response, RoutedProvider(
+                provider=route.provider,
+                runtime_mode=route.runtime_mode,
+                trace_metadata={
+                    "primary_provider": route.provider.name,
+                    "primary_duration_ms": execution.timing_metadata["total_provider_ms"],
+                    "fallback_attempted": False,
+                    "final_provider": route.provider.name,
+                    "total_provider_ms": execution.timing_metadata["total_provider_ms"],
+                    **execution.timing_metadata,
+                },
             )
         try:
             return await route.provider.generate(messages, response_schema, trace_id), route

@@ -74,7 +74,8 @@ def _add_worker(session_factory, *, status: str = "ONLINE", loaded_model: str | 
 def _provider(session_factory, *, timeout: float = 0.01) -> LocalWorkerProvider:
     return LocalWorkerProvider(
         session_factory,
-        request_timeout_seconds=timeout,
+        claim_timeout_seconds=timeout,
+        inference_timeout_seconds=timeout,
         lease_seconds=30,
         ttl_seconds=60,
         result_poll_interval_seconds=0.001,
@@ -97,6 +98,26 @@ async def test_degraded_worker_maps_to_fallback_eligible_model_unavailable(sessi
 
     assert failure.kind is ProviderFailureKind.MODEL_UNAVAILABLE
     assert failure.fallback_eligible is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "loaded_model", "kind"),
+    [
+        ("OFFLINE", "Qwen/Qwen3.5-9B", ProviderFailureKind.WORKER_UNAVAILABLE),
+        ("ONLINE", None, ProviderFailureKind.MODEL_UNAVAILABLE),
+    ],
+)
+async def test_unavailable_local_capacity_fails_before_creating_a_job(session_factory, status, loaded_model, kind) -> None:
+    _add_worker(session_factory, status=status, loaded_model=loaded_model)
+
+    with pytest.raises(ProviderFailure) as raised:
+        await _provider(session_factory).generate([{"role": "user", "content": "x"}], AgentResponse, str(uuid4()))
+
+    with session_factory() as session:
+        assert session.query(InferenceJob).count() == 0
+    assert raised.value.kind is kind
+    assert raised.value.fallback_eligible is True
 
 
 @pytest.mark.asyncio

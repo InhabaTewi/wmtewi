@@ -49,7 +49,8 @@ async def test_local_worker_provider_persists_final_messages_and_validates_resul
         add_worker(session)
     provider = LocalWorkerProvider(
         session_factory,
-        request_timeout_seconds=1,
+        claim_timeout_seconds=1,
+        inference_timeout_seconds=1,
         lease_seconds=30,
         ttl_seconds=60,
         result_poll_interval_seconds=0.01,
@@ -81,7 +82,8 @@ async def test_local_worker_provider_persists_final_messages_and_validates_resul
 async def test_local_worker_mode_never_falls_back_to_external(session_factory) -> None:
     provider = LocalWorkerProvider(
         session_factory,
-        request_timeout_seconds=1,
+        claim_timeout_seconds=1,
+        inference_timeout_seconds=1,
         lease_seconds=30,
         ttl_seconds=60,
         result_poll_interval_seconds=0.01,

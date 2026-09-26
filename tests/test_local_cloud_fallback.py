@@ -69,8 +69,10 @@ async def test_local_success_does_not_call_cloud_and_records_local_path() -> Non
         "provider_path": "local",
         "primary_provider": "local-worker",
         "primary_duration_ms": route.trace_metadata["primary_duration_ms"],
+        "failover_decision_ms": None,
         "fallback_attempted": False,
         "final_provider": "local-worker",
+        "total_provider_ms": route.trace_metadata["total_provider_ms"],
     }
 
 
@@ -253,7 +255,7 @@ def test_stale_local_completion_is_rejected_after_timeout_terminal_state(session
 
 
 @pytest.mark.asyncio
-async def test_local_job_timeout_falls_back_and_rejects_stale_worker_completion(session, monkeypatch) -> None:
+async def test_claimed_local_inference_timeout_falls_back_and_rejects_stale_worker_completion(session, monkeypatch) -> None:
     session.add(
         WorkerNode(
             worker_id="home-5090-01",
@@ -270,7 +272,8 @@ async def test_local_job_timeout_falls_back_and_rejects_stale_worker_completion(
     session_factory = sessionmaker(bind=session.bind)
     local = LocalWorkerProvider(
         session_factory,
-        request_timeout_seconds=0.01,
+        claim_timeout_seconds=0.01,
+        inference_timeout_seconds=0.01,
         lease_seconds=30,
         ttl_seconds=60,
         result_poll_interval_seconds=0.001,
@@ -296,7 +299,7 @@ async def test_local_job_timeout_falls_back_and_rejects_stale_worker_completion(
     )
 
     assert response.speech == "cloud result"
-    assert route.trace_metadata["primary_failure_kind"] == ProviderFailureKind.JOB_QUEUE_TIMEOUT.value
+    assert route.trace_metadata["primary_failure_kind"] == ProviderFailureKind.LOCAL_INFERENCE_TIMEOUT.value
     assert len(cloud.calls) == 1
     assert job_id is not None
     assert claim_token is not None

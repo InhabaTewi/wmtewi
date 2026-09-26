@@ -78,6 +78,7 @@ class ProviderFailure(ProviderUnavailableError):
         provider: str,
         safe_message: str,
         cause: Exception | None = None,
+        trace_metadata: dict[str, int | None] | None = None,
     ) -> None:
         profile = FAILURE_PROFILES[kind]
         super().__init__(safe_message)
@@ -88,6 +89,7 @@ class ProviderFailure(ProviderUnavailableError):
         self.public_error_code = kind.value
         self.safe_message = safe_message
         self.cause = cause
+        self.trace_metadata = trace_metadata or {}
 
 
 @dataclass(frozen=True)

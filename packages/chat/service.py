@@ -26,6 +26,7 @@ class ChatService:
         self.knowledge_service = knowledge_service
 
     async def chat(self, request: ChatRequest) -> ChatResult:
+        chat_started = perf_counter()
         trace_id = uuid4()
         event = ChatEvent(
             event_id=uuid4(),
@@ -37,27 +38,41 @@ class ChatService:
             timestamp=datetime.now(UTC),
             metadata=request.metadata,
         )
+        selection_started = perf_counter()
         route = await self.router.select()
+        timing_metadata: dict[str, int | None] = {
+            "local_worker_selection_ms": round((perf_counter() - selection_started) * 1000),
+            "memory_retrieval_ms": None,
+        }
+        knowledge_started = perf_counter()
         knowledge_chunks = await self.knowledge_service.asearch(event.text) if self.knowledge_service else []
+        timing_metadata["knowledge_retrieval_ms"] = round((perf_counter() - knowledge_started) * 1000)
+        context_started = perf_counter()
         context = ContextBuilder(self.session).build(
             event,
             route.runtime_mode,
             request.persona_id,
             knowledge_chunks,
         )
+        timing_metadata["context_build_ms"] = round((perf_counter() - context_started) * 1000)
         started_at = perf_counter()
         try:
             response, route = await self.router.generate(
-                ContextBuilder.to_messages(context, event), AgentResponse, str(trace_id)
+                ContextBuilder.to_messages(context, event), AgentResponse, str(trace_id), route
             )
         except ProviderError as exc:
             trace_metadata = getattr(exc, "failover_trace_metadata", None)
             if trace_metadata is not None:
-                self._persist_failure_trace(event, context, trace_metadata, request.persona_id)
+                timing_metadata.update(trace_metadata)
+                timing_metadata["total_chat_ms"] = round((perf_counter() - chat_started) * 1000)
+                self._persist_failure_trace(event, context, trace_metadata, request.persona_id, timing_metadata)
                 self.session.commit()
             raise
         latency_ms = round((perf_counter() - started_at) * 1000)
-        self._persist(event, context, response, route, latency_ms, request.persona_id)
+        timing_metadata.update(route.trace_metadata or {})
+        timing_metadata.setdefault("total_provider_ms", latency_ms)
+        timing_metadata["total_chat_ms"] = round((perf_counter() - chat_started) * 1000)
+        self._persist(event, context, response, route, latency_ms, request.persona_id, timing_metadata)
         self.session.commit()
         return ChatResult(
             trace_id=trace_id,
@@ -66,7 +81,16 @@ class ChatService:
             response=response,
         )
 
-    def _persist(self, event, context, response, route, latency_ms: int, persona_id: str) -> None:
+    def _persist(
+        self,
+        event,
+        context,
+        response,
+        route,
+        latency_ms: int,
+        persona_id: str,
+        timing_metadata: dict[str, object],
+    ) -> None:
         session_record = self.session.get(SessionRecord, event.session_id)
         if session_record is None:
             session_record = SessionRecord(
@@ -115,11 +139,19 @@ class ChatService:
                     "response": response.model_dump(mode="json"),
                     "latency_ms": latency_ms,
                     **(route.trace_metadata or {}),
+                    "timing": timing_metadata,
                 },
             )
         )
 
-    def _persist_failure_trace(self, event, context, trace_metadata: dict[str, object], persona_id: str) -> None:
+    def _persist_failure_trace(
+        self,
+        event,
+        context,
+        trace_metadata: dict[str, object],
+        persona_id: str,
+        timing_metadata: dict[str, object],
+    ) -> None:
         self.session.add(
             InteractionTrace(
                 id=event.trace_id,
@@ -132,6 +164,7 @@ class ChatService:
                     "provider": trace_metadata["final_provider"],
                     "persona_id": persona_id,
                     **trace_metadata,
+                    "timing": timing_metadata,
                 },
             )
         )

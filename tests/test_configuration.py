@@ -128,6 +128,18 @@ def test_embedding_dimension_and_paths_parse_from_environment(monkeypatch) -> No
     assert settings.cors_origins == ["https://app.example", "https://admin.example"]
 
 
+def test_local_claim_inference_and_chat_timeouts_are_independent(monkeypatch) -> None:
+    monkeypatch.setenv("LOCAL_JOB_CLAIM_TIMEOUT_SECONDS", "7")
+    monkeypatch.setenv("LOCAL_INFERENCE_TIMEOUT_SECONDS", "90")
+    monkeypatch.setenv("CHAT_TOTAL_TIMEOUT_SECONDS", "150")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.local_job_claim_timeout_seconds == 7
+    assert settings.local_inference_timeout_seconds == 90
+    assert settings.chat_total_timeout_seconds == 150
+
+
 def test_database_engine_uses_postgres_pool_settings(monkeypatch) -> None:
     configured = Settings(
         database_url="postgresql+psycopg://user:password@db.example/inaba",

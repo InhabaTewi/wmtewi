@@ -41,6 +41,7 @@ def test_production_scripts_are_shell_valid_and_never_prune_or_remove_volumes() 
         PROJECT_ROOT / "scripts/stop_prod.sh",
         PROJECT_ROOT / "scripts/status_prod.sh",
         PROJECT_ROOT / "scripts/upgrade_prod.sh",
+        PROJECT_ROOT / "scripts/update_core_only.sh",
     ]
     for script in scripts:
         subprocess.run(["bash", "-n", script], check=True)
@@ -60,6 +61,19 @@ def test_deploy_script_runs_migration_before_core_start() -> None:
     assert 'if [[ -z "${INABA_CORE_IMAGE:-}" ]]; then' in script
     assert 'echo "Using prebuilt Core image: $INABA_CORE_IMAGE"' in script
     assert 'PORT="${INABA_CORE_PORT:-$PORT}"' in script
+
+
+def test_core_only_update_never_targets_postgres_lifecycle_and_guards_its_identity() -> None:
+    script = (PROJECT_ROOT / "scripts/update_core_only.sh").read_text()
+
+    assert "ps -q postgres" in script
+    assert "inspect --format '{{.Id}} {{.State.StartedAt}}'" in script
+    assert "run --rm --no-deps core python -m alembic upgrade head" in script
+    assert "up -d --no-deps --force-recreate core" in script
+    assert "PostgreSQL container identity changed" in script
+    assert "up -d postgres" not in script
+    assert "down" not in script
+    assert "volume" not in script
 
 
 def test_lifecycle_scripts_load_deployment_overrides_from_env_file() -> None:
