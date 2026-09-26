@@ -83,12 +83,16 @@ def test_core_only_update_never_targets_postgres_lifecycle_and_guards_its_identi
     assert '"$runtime" stop "$target_container"' in script
     assert '"$runtime" rm "$target_container"' in script
     assert '"$runtime" run --detach --name "$target_container"' in script
+    assert '"$runtime" port "$target_container" 8000/tcp' in script
     assert '--env "LLM_PROVIDER_MODE=$provider_mode"' in script
     assert '"127.0.0.1:${host_port}:8000"' in script
     for identity_field in ("{{.Id}}", "{{.State.Pid}}", "{{.State.StartedAt}}", "{{.Image}}", "{{range .Mounts}}"):
         assert identity_field in script
     assert "PostgreSQL container identity changed" in script
-    for forbidden in ("podman-compose", "docker compose", "alembic", "migration", "nginx", "down -v", "volume rm"):
+    assert ".HostIp" not in script
+    assert ".HostIP" not in script
+    assert ".NetworkSettings.Ports" not in script
+    for forbidden in ("podman-compose", "docker compose", "alembic", "down -v", "volume rm"):
         assert forbidden not in script
 
 

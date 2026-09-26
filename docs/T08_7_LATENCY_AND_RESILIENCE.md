@@ -93,6 +93,12 @@ Before and after an apply, it compares a non-sensitive PostgreSQL fingerprint co
 
 This workflow remains unexecuted in production. Blue/green traffic switching remains a separate Nginx operation outside this updater. Core migration is likewise a separately approved deployment operation; this updater contains no Alembic or migration behavior.
 
+### R2 Podman 3.3.1 Compatibility Fix
+
+During an R2 production dry-run, no mutation occurred, but Podman 3.3.1 rejected the updater's nested Go template used to read `NetworkSettings.Ports` and `HostIp`. The deployment tooling now uses the stable dedicated command `podman port <target> 8000/tcp` for the port guard. It strictly accepts one IPv4 loopback mapping for the requested port: `127.0.0.1:<port>` or `8000/tcp -> 127.0.0.1:<port>`. Public, IPv6, empty-IP, malformed, wrong-port, and multiple mappings fail closed with `PORT_BINDING_VALIDATION_FAILED`.
+
+The updater production compatibility baseline is Podman 3.3.1. It uses direct Podman `inspect`, `port`, `run`, `stop`, and `rm`; it does not depend on Podman Compose or nested port templates. The PostgreSQL ID, PID, `StartedAt`, image, and mount-identity guards remain unchanged.
+
 ## Residual Risks and Next Measurements
 
 - Local queue timing is Core-observed polling latency, not an exact Worker claim timestamp.

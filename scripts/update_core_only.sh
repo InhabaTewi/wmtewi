@@ -99,6 +99,28 @@ postgres_snapshot() {
     printf '%s|%s|%s|%s|%s' "$container_id" "$pid" "$started_at" "$image_id" "$mounts_hash"
 }
 
+validate_target_port_binding() {
+    local output line mapping host_ip mapped_port mappings=0
+    if ! output="$("$runtime" port "$target_container" 8000/tcp)"; then
+        fail "PORT_BINDING_VALIDATION_FAILED: unable to read target port binding"
+    fi
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        mapping="${line#8000/tcp -> }"
+        if [[ "$mapping" == "$line" && "$line" == *" -> "* ]]; then
+            fail "PORT_BINDING_VALIDATION_FAILED: unexpected container port mapping"
+        fi
+        if [[ ! "$mapping" =~ ^127\.0\.0\.1:([0-9]+)$ ]]; then
+            fail "PORT_BINDING_VALIDATION_FAILED: target binding must be IPv4 loopback"
+        fi
+        host_ip="${mapping%:*}"
+        mapped_port="${mapping##*:}"
+        [[ "$host_ip" == "127.0.0.1" && "$mapped_port" == "$host_port" ]] || fail "PORT_BINDING_VALIDATION_FAILED: target binding differs from requested port"
+        ((mappings += 1))
+    done <<< "$output"
+    (( mappings == 1 )) || fail "PORT_BINDING_VALIDATION_FAILED: expected exactly one target port binding"
+}
+
 container_exists "$postgres_container" || fail "PostgreSQL container does not exist"
 container_exists "$target_container" || fail "target container does not exist"
 container_exists "$protected_container" || fail "protected container does not exist"
@@ -108,9 +130,7 @@ protected_container_id="$("$runtime" inspect --format '{{.Id}}' "$protected_cont
 [[ "$target_container_id" != "$protected_container_id" ]] || fail "target and protected container identities must differ"
 "$runtime" image exists "$image" || fail "image does not exist"
 "$runtime" network exists "$network" || fail "network does not exist"
-
-target_bind="$("$runtime" inspect --format '{{range $port, $bindings := .NetworkSettings.Ports}}{{range $bindings}}{{.HostIp}}:{{.HostPort}}:{{$port}}{{"\n"}}{{end}}{{end}}' "$target_container")"
-printf '%s\n' "$target_bind" | grep -Fx "127.0.0.1:${host_port}:8000/tcp" >/dev/null || fail "target does not own requested loopback port"
+validate_target_port_binding
 postgres_before="$(postgres_snapshot)"
 postgres_before_hash="$(printf '%s' "$postgres_before" | sha256sum | awk '{print $1}')"
 
@@ -122,6 +142,8 @@ echo "image=$image"
 echo "provider_mode=$provider_mode"
 echo "network=$network"
 echo "postgres_identity_hash=$postgres_before_hash"
+echo "migration=none"
+echo "nginx=none"
 
 [[ "$mode" == "dry-run" ]] && exit 0
 

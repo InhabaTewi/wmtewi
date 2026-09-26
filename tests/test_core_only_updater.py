@@ -28,9 +28,10 @@ def updater_runtime(tmp_path):
         "if [[ \"$1 $2\" == 'container exists' ]]; then exit 0; fi\n"
         "if [[ \"$1 $2\" == 'image exists' ]]; then [[ -z \"${FAKE_FAIL_IMAGE:-}\" ]]; exit; fi\n"
         "if [[ \"$1 $2\" == 'network exists' ]]; then [[ -z \"${FAKE_FAIL_NETWORK:-}\" ]]; exit; fi\n"
+        "if [[ \"$1\" == port ]]; then printf '%s\\n' \"${FAKE_PORT_OUTPUT:-127.0.0.1:1515}\"; exit \"${FAKE_PORT_EXIT_CODE:-0}\"; fi\n"
         "if [[ \"$1\" != inspect ]]; then exit 0; fi\n"
         "format=\"$3\"\n"
-        "if [[ \"$format\" == *'.NetworkSettings.Ports'* ]]; then printf '127.0.0.1:1515:8000/tcp\\n'; exit 0; fi\n"
+        "if [[ \"$format\" == *'.HostIp'* || \"$format\" == *'.HostIP'* || \"$format\" == *'.NetworkSettings.Ports'* ]]; then echo 'unsupported legacy nested template' >&2; exit 99; fi\n"
         "if [[ \"$format\" == '{{.Id}}' && \"$4\" == inaba-core-standby ]]; then printf 'core-standby-id\\n'; exit 0; fi\n"
         "if [[ \"$format\" == '{{.Id}}' && \"$4\" == inaba-core-active ]]; then printf 'core-active-id\\n'; exit 0; fi\n"
         "phase=before; [[ -f \"$UPDATER_PHASE\" ]] && phase=after\n"
@@ -89,10 +90,46 @@ def test_dry_run_validates_without_mutation(updater_runtime) -> None:
     commands = log.read_text()
     assert "image exists localhost/inaba-core:6526779" in commands
     assert "network exists inaba_internal" in commands
+    assert "port inaba-core-standby 8000/tcp" in commands
     assert "stop " not in commands
     assert "rm " not in commands
     assert "run " not in commands
     assert "target_container=inaba-core-standby" in result.stdout
+    assert "migration=none" in result.stdout
+    assert "nginx=none" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "port_output, expected_success",
+    [
+        ("127.0.0.1:1515", True),
+        ("8000/tcp -> 127.0.0.1:1515", True),
+        ("127.0.0.1:1516", False),
+        ("0.0.0.0:1515", False),
+        (":1515", False),
+        ("127.0.0.1:1515\n0.0.0.0:1515", False),
+        ("not-a-port-mapping", False),
+    ],
+)
+def test_podman_port_output_is_strictly_validated(updater_runtime, port_output, expected_success) -> None:
+    environment, arguments, _ = updater_runtime
+    environment["FAKE_PORT_OUTPUT"] = port_output
+
+    result = run_updater(environment, ["--dry-run", *arguments])
+
+    assert (result.returncode == 0) is expected_success
+    if not expected_success:
+        assert "PORT_BINDING_VALIDATION_FAILED" in result.stderr
+
+
+def test_podman_port_failure_fails_closed(updater_runtime) -> None:
+    environment, arguments, _ = updater_runtime
+    environment["FAKE_PORT_EXIT_CODE"] = "1"
+
+    result = run_updater(environment, ["--dry-run", *arguments])
+
+    assert result.returncode != 0
+    assert "PORT_BINDING_VALIDATION_FAILED" in result.stderr
 
 
 @pytest.mark.parametrize("argument, value", [("--host-port", "80"), ("--provider-mode", "unknown")])
