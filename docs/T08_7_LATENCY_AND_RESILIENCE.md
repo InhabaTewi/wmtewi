@@ -70,18 +70,28 @@ The generic benchmark reports measured non-streaming end-to-end duration, includ
 
 ## Core-Only Deployment Guard
 
-`scripts/update_core_only.sh` is the follow-up Core update workflow. It is intentionally distinct from `deploy_prod.sh`, which retains first-deployment behavior and explicitly starts PostgreSQL.
+### R1 Rejected by R2 Audit
 
-The Core-only workflow:
+The original `scripts/update_core_only.sh` in `6526779` was not used for production. The R2 audit rejected it because it selected the fixed compose `core` service, used global port/image configuration, ran an unconditional migration, and only compared PostgreSQL container ID plus `StartedAt`. It could not prove that only a blue/green standby slot was replaced. Production Core, PostgreSQL, Nginx, and environment files were not changed during that audit.
 
-1. Requires PostgreSQL to already be running and records its container ID and `StartedAt`.
-2. Builds or selects only the Core image.
-3. Runs Alembic as a no-dependency one-off Core container.
-4. Recreates only Core with `up -d --no-deps --force-recreate core`.
-5. Checks Core live and ready endpoints.
-6. Re-reads PostgreSQL container ID and `StartedAt`; any change is an explicit failure/alarm.
+### R2 Explicit-Target Design
 
-It contains no PostgreSQL `up`, `down`, volume, restore, or automatic rollback operation. This workflow has not been run against production. Its script contract has focused static coverage; the current Windows environment cannot run the pre-existing `bash -n` asset check because WSL mangles the Windows path before any script is parsed.
+The replacement updater is direct-runtime, defaulting to `podman` rather than `podman-compose`. It requires an explicit `--dry-run` or `--apply`; no-argument execution fails before invoking the runtime. It requires explicit target container, protected container, loopback host port, image, provider mode, PostgreSQL container, environment file, existing network, knowledge mount, and backup mount.
+
+`--dry-run` validates all inputs, existing runtime objects, target loopback binding, and a PostgreSQL fingerprint without mutation. `--apply` then stops/removes only the explicitly named target and starts only that target with:
+
+- `127.0.0.1:<host-port>:8000`
+- the supplied existing network
+- the supplied env file
+- a container-specific `LLM_PROVIDER_MODE` override
+- the production Core knowledge and backup mounts
+- restart policy and image health semantics from the supplied image
+
+The protected container must differ from both the target and PostgreSQL containers and is never named in a mutation command. The updater never manages PostgreSQL lifecycle, runs migration commands, creates a network, or invokes Nginx.
+
+Before and after an apply, it compares a non-sensitive PostgreSQL fingerprint containing container ID, PID, `StartedAt`, image ID, and a SHA-256 of sorted mount type/source/destination tuples. Any change exits nonzero with `DEPLOYMENT_GUARD_FAILED`; it does not restart, restore, or modify PostgreSQL. The target must pass both `/health/live` and `/health/ready` within the explicit timeout.
+
+This workflow remains unexecuted in production. Blue/green traffic switching remains a separate Nginx operation outside this updater. Core migration is likewise a separately approved deployment operation; this updater contains no Alembic or migration behavior.
 
 ## Residual Risks and Next Measurements
 
@@ -89,4 +99,4 @@ It contains no PostgreSQL `up`, `down`, volume, restore, or automatic rollback o
 - The Worker protocol does not currently carry monotonic claim and result-commit phase timings.
 - The non-streaming Cloud client cannot provide TTFT or split DNS/TLS without a streaming/transport instrumentation change.
 - `chat_total_timeout_seconds` should be enforced only after measuring Cloud tail latency and deciding whether a terminal Cloud timeout should be surfaced or be retried.
-- Production blue/green Core rollback remains the accepted active/rollback topology; Core-only script validation must first be done in a disposable compose project before being used for a production rollout.
+- Production blue/green Core rollback remains the accepted active/rollback topology. The R2 updater has fake-runtime command-plan coverage and direct-Podman syntax/contract coverage; a disposable Podman runtime run is still required before any production `--apply`.

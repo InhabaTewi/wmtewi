@@ -66,14 +66,30 @@ def test_deploy_script_runs_migration_before_core_start() -> None:
 def test_core_only_update_never_targets_postgres_lifecycle_and_guards_its_identity() -> None:
     script = (PROJECT_ROOT / "scripts/update_core_only.sh").read_text()
 
-    assert "ps -q postgres" in script
-    assert "inspect --format '{{.Id}} {{.State.StartedAt}}'" in script
-    assert "run --rm --no-deps core python -m alembic upgrade head" in script
-    assert "up -d --no-deps --force-recreate core" in script
+    for argument in (
+        "--target-container",
+        "--protected-container",
+        "--host-port",
+        "--image",
+        "--provider-mode",
+        "--postgres-container",
+        "--env-file",
+        "--network",
+        "--dry-run",
+        "--apply",
+    ):
+        assert argument in script
+    assert 'runtime="podman"' in script
+    assert '"$runtime" stop "$target_container"' in script
+    assert '"$runtime" rm "$target_container"' in script
+    assert '"$runtime" run --detach --name "$target_container"' in script
+    assert '--env "LLM_PROVIDER_MODE=$provider_mode"' in script
+    assert '"127.0.0.1:${host_port}:8000"' in script
+    for identity_field in ("{{.Id}}", "{{.State.Pid}}", "{{.State.StartedAt}}", "{{.Image}}", "{{range .Mounts}}"):
+        assert identity_field in script
     assert "PostgreSQL container identity changed" in script
-    assert "up -d postgres" not in script
-    assert "down" not in script
-    assert "volume" not in script
+    for forbidden in ("podman-compose", "docker compose", "alembic", "migration", "nginx", "down -v", "volume rm"):
+        assert forbidden not in script
 
 
 def test_lifecycle_scripts_load_deployment_overrides_from_env_file() -> None:

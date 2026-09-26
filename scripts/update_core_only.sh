@@ -1,81 +1,167 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE_FILE="$PROJECT_ROOT/deploy/docker-compose.prod.yml"
-ENV_FILE="${INABA_ENV_FILE:-/etc/inaba/inaba.env}"
-COMPOSE_BIN="${INABA_COMPOSE_BIN:-}"
-PORT="${INABA_CORE_PORT:-8000}"
+usage() {
+    cat <<'EOF'
+Usage:
+  update_core_only.sh --dry-run|--apply \
+    --target-container NAME --protected-container NAME --host-port PORT \
+    --image IMAGE --provider-mode MODE --postgres-container NAME \
+    --env-file PATH --network NAME --knowledge-data-dir PATH --backup-dir PATH \
+    [--runtime podman] [--health-timeout-seconds SECONDS]
+EOF
+}
 
-if [[ -z "$COMPOSE_BIN" ]]; then
-    if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-        COMPOSE_BIN="docker compose"
-    elif command -v podman-compose >/dev/null 2>&1; then
-        COMPOSE_BIN="podman-compose"
-    else
-        echo "docker compose or podman-compose is required" >&2
-        exit 1
-    fi
-fi
-
-if [[ ! -r "$ENV_FILE" ]]; then
-    echo "Production env file is missing or unreadable: $ENV_FILE" >&2
+fail() {
+    echo "DEPLOYMENT_GUARD_FAILED: $*" >&2
     exit 1
-fi
+}
 
-for key in APP_ENV DATABASE_URL POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB LLM_BASE_URL LLM_API_KEY EMBEDDING_BASE_URL EMBEDDING_API_KEY SERVICE_TOKEN ALLOWED_HOSTS; do
-    if ! grep -qE "^${key}=.+" "$ENV_FILE"; then
-        echo "Production env file is missing required value: $key" >&2
-        exit 1
-    fi
+mode=""
+runtime="podman"
+target_container=""
+protected_container=""
+host_port=""
+image=""
+provider_mode=""
+postgres_container=""
+env_file=""
+network=""
+knowledge_data_dir=""
+backup_dir=""
+health_timeout_seconds=60
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run|--apply)
+            [[ -z "$mode" ]] || fail "choose exactly one of --dry-run or --apply"
+            mode="${1#--}"
+            ;;
+        --target-container|--protected-container|--host-port|--image|--provider-mode|--postgres-container|--env-file|--network|--knowledge-data-dir|--backup-dir|--runtime|--health-timeout-seconds)
+            [[ $# -ge 2 ]] || fail "missing value for $1"
+            case "$1" in
+                --target-container) target_container="$2" ;;
+                --protected-container) protected_container="$2" ;;
+                --host-port) host_port="$2" ;;
+                --image) image="$2" ;;
+                --provider-mode) provider_mode="$2" ;;
+                --postgres-container) postgres_container="$2" ;;
+                --env-file) env_file="$2" ;;
+                --network) network="$2" ;;
+                --knowledge-data-dir) knowledge_data_dir="$2" ;;
+                --backup-dir) backup_dir="$2" ;;
+                --runtime) runtime="$2" ;;
+                --health-timeout-seconds) health_timeout_seconds="$2" ;;
+            esac
+            shift
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        *) fail "unknown argument: $1" ;;
+    esac
+    shift
 done
 
-if ! grep -q '^APP_ENV=production$' "$ENV_FILE"; then
-    echo "APP_ENV must be production in $ENV_FILE" >&2
-    exit 1
-fi
-
-for key in POSTGRES_IMAGE PYTHON_BASE_IMAGE INABA_KNOWLEDGE_DATA_DIR INABA_CORE_PORT INABA_CORE_IMAGE; do
-    value="$(grep -E "^${key}=" "$ENV_FILE" | tail -n 1 | cut -d= -f2- || true)"
-    if [[ -n "$value" ]]; then
-        export "$key=$value"
-    fi
+[[ -n "$mode" ]] || fail "explicit --dry-run or --apply is required"
+for required in target_container protected_container host_port image provider_mode postgres_container env_file network knowledge_data_dir backup_dir; do
+    [[ -n "${!required}" ]] || fail "--${required//_/-} is required"
 done
-PORT="${INABA_CORE_PORT:-$PORT}"
-export INABA_ENV_FILE="$ENV_FILE"
-export INABA_CORE_PORT="$PORT"
+[[ "$target_container" != "$protected_container" ]] || fail "target and protected containers must differ"
+[[ "$target_container" != "$postgres_container" ]] || fail "target must not name PostgreSQL"
+[[ "$protected_container" != "$postgres_container" ]] || fail "protected container must not name PostgreSQL"
+[[ "$runtime" == "podman" ]] || fail "runtime must be podman"
+[[ "$host_port" =~ ^[0-9]+$ ]] && (( host_port >= 1024 && host_port <= 65535 )) || fail "host port must be 1024-65535"
+[[ "$health_timeout_seconds" =~ ^[0-9]+$ ]] && (( health_timeout_seconds > 0 && health_timeout_seconds <= 300 )) || fail "health timeout must be 1-300 seconds"
+case "$provider_mode" in
+    cloud|local_worker|prefer_local_with_cloud_fallback) ;;
+    *) fail "unsupported provider mode" ;;
+esac
+[[ -r "$env_file" ]] || fail "env file is missing or unreadable"
+[[ -d "$knowledge_data_dir" ]] || fail "knowledge data directory is missing"
+[[ -d "$backup_dir" ]] || fail "backup directory is missing"
+command -v "$runtime" >/dev/null 2>&1 || fail "runtime command is unavailable"
 
-RUNTIME_BIN="${COMPOSE_BIN%% *}"
-postgres_container="$($COMPOSE_BIN -f "$COMPOSE_FILE" ps -q postgres)"
-if [[ -z "$postgres_container" ]]; then
-    echo "PostgreSQL must already be running; core-only update will not start it" >&2
-    exit 1
-fi
-postgres_before="$($RUNTIME_BIN inspect --format '{{.Id}} {{.State.StartedAt}}' "$postgres_container")"
+container_exists() {
+    "$runtime" container exists "$1"
+}
 
-if [[ -z "${INABA_CORE_IMAGE:-}" ]]; then
-    $COMPOSE_BIN -f "$COMPOSE_FILE" build core
-else
-    echo "Using prebuilt Core image: $INABA_CORE_IMAGE"
-fi
+postgres_snapshot() {
+    local container_id pid started_at image_id mounts mounts_hash
+    container_id="$("$runtime" inspect --format '{{.Id}}' "$postgres_container")"
+    pid="$("$runtime" inspect --format '{{.State.Pid}}' "$postgres_container")"
+    started_at="$("$runtime" inspect --format '{{.State.StartedAt}}' "$postgres_container")"
+    image_id="$("$runtime" inspect --format '{{.Image}}' "$postgres_container")"
+    mounts="$("$runtime" inspect --format '{{range .Mounts}}{{.Type}}|{{.Source}}|{{.Destination}}{{"\n"}}{{end}}' "$postgres_container" | LC_ALL=C sort)"
+    mounts_hash="$(printf '%s' "$mounts" | sha256sum | awk '{print $1}')"
+    [[ -n "$container_id" && -n "$pid" && -n "$started_at" && -n "$image_id" ]] || fail "PostgreSQL identity is incomplete"
+    printf '%s|%s|%s|%s|%s' "$container_id" "$pid" "$started_at" "$image_id" "$mounts_hash"
+}
 
-$COMPOSE_BIN -f "$COMPOSE_FILE" run --rm --no-deps core python -m alembic upgrade head
-$COMPOSE_BIN -f "$COMPOSE_FILE" up -d --no-deps --force-recreate core
+container_exists "$postgres_container" || fail "PostgreSQL container does not exist"
+container_exists "$target_container" || fail "target container does not exist"
+container_exists "$protected_container" || fail "protected container does not exist"
+target_container_id="$("$runtime" inspect --format '{{.Id}}' "$target_container")"
+protected_container_id="$("$runtime" inspect --format '{{.Id}}' "$protected_container")"
+[[ -n "$target_container_id" && -n "$protected_container_id" ]] || fail "Core container identity is incomplete"
+[[ "$target_container_id" != "$protected_container_id" ]] || fail "target and protected container identities must differ"
+"$runtime" image exists "$image" || fail "image does not exist"
+"$runtime" network exists "$network" || fail "network does not exist"
 
-for _ in {1..60}; do
-    if curl --fail --silent --show-error "http://127.0.0.1:${PORT}/health/live" >/dev/null 2>&1; then
-        break
+target_bind="$("$runtime" inspect --format '{{range $port, $bindings := .NetworkSettings.Ports}}{{range $bindings}}{{.HostIp}}:{{.HostPort}}:{{$port}}{{"\n"}}{{end}}{{end}}' "$target_container")"
+printf '%s\n' "$target_bind" | grep -Fx "127.0.0.1:${host_port}:8000/tcp" >/dev/null || fail "target does not own requested loopback port"
+postgres_before="$(postgres_snapshot)"
+postgres_before_hash="$(printf '%s' "$postgres_before" | sha256sum | awk '{print $1}')"
+
+echo "mode=$mode"
+echo "target_container=$target_container"
+echo "protected_container=$protected_container"
+echo "host_port=$host_port"
+echo "image=$image"
+echo "provider_mode=$provider_mode"
+echo "network=$network"
+echo "postgres_identity_hash=$postgres_before_hash"
+
+[[ "$mode" == "dry-run" ]] && exit 0
+
+assert_postgres_unchanged() {
+    local postgres_after postgres_after_hash
+    postgres_after="$(postgres_snapshot)"
+    postgres_after_hash="$(printf '%s' "$postgres_after" | sha256sum | awk '{print $1}')"
+    if [[ "$postgres_before" != "$postgres_after" ]]; then
+        echo "postgres_identity_before_hash=$postgres_before_hash" >&2
+        echo "postgres_identity_after_hash=$postgres_after_hash" >&2
+        fail "PostgreSQL container identity changed"
+    fi
+}
+
+on_apply_exit() {
+    local status=$?
+    trap - EXIT
+    assert_postgres_unchanged
+    exit "$status"
+}
+trap on_apply_exit EXIT
+
+"$runtime" stop "$target_container"
+"$runtime" rm "$target_container"
+"$runtime" run --detach --name "$target_container" --restart unless-stopped \
+    --network "$network" --env-file "$env_file" \
+    --env "LLM_PROVIDER_MODE=$provider_mode" \
+    --publish "127.0.0.1:${host_port}:8000" \
+    --volume "${knowledge_data_dir}:/data/knowledge:rw" \
+    --volume "${backup_dir}:/data/backups:rw" \
+    "$image" >/dev/null
+
+health_url="http://127.0.0.1:${host_port}"
+for (( attempt = 1; attempt <= health_timeout_seconds; attempt++ )); do
+    if curl --fail --silent --show-error "${health_url}/health/live" >/dev/null 2>&1 \
+        && curl --fail --silent --show-error "${health_url}/health/ready" >/dev/null 2>&1; then
+        echo "target_health=ready"
+        exit 0
     fi
     sleep 1
 done
-curl --fail --silent --show-error "http://127.0.0.1:${PORT}/health/live" >/dev/null
-curl --fail --silent --show-error "http://127.0.0.1:${PORT}/health/ready" >/dev/null
 
-postgres_after_container="$($COMPOSE_BIN -f "$COMPOSE_FILE" ps -q postgres)"
-postgres_after="$($RUNTIME_BIN inspect --format '{{.Id}} {{.State.StartedAt}}' "$postgres_after_container")"
-if [[ "$postgres_before" != "$postgres_after" ]]; then
-    echo "ALERT: PostgreSQL container identity changed during core-only update; investigate immediately" >&2
-    exit 1
-fi
-
-echo "Core updated on 127.0.0.1:${PORT}; PostgreSQL container identity unchanged"
+fail "target Core did not become live and ready"
