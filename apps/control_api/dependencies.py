@@ -1,8 +1,12 @@
 import asyncio
+import logging
 import secrets
 from collections.abc import AsyncGenerator, Generator
+from contextvars import ContextVar
 from pathlib import Path
+from time import perf_counter
 from typing import Literal
+from uuid import uuid4
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -20,6 +24,8 @@ from packages.providers.local_cloud_fallback import PreferLocalWithCloudFallback
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ReadinessState = Literal["healthy", "degraded", "unavailable"]
+logger = logging.getLogger(__name__)
+readiness_check_id: ContextVar[str | None] = ContextVar("readiness_check_id", default=None)
 
 
 def database_engine_options(database_url: str) -> dict:
@@ -151,21 +157,83 @@ def check_persona_readiness() -> bool:
 
 
 async def check_llm_readiness() -> ReadinessState:
+    started = perf_counter()
     router = create_provider_router()
+    provider = None
     try:
         if router.mode == "prefer_local_with_cloud_fallback":
             if router.local is None or router.external is None:
+                _log_llm_readiness_failure(
+                    failure_stage="acquire_client",
+                    failure_kind="configuration",
+                    failure_reason_code="provider_missing",
+                    exception_class=None,
+                    elapsed_ms=round((perf_counter() - started) * 1000),
+                    http_status=None,
+                )
                 return "unavailable"
-            return (await PreferLocalWithCloudFallbackProvider(router.local, router.external, FailoverPolicy()).health_status()).state
+            state = (await PreferLocalWithCloudFallbackProvider(router.local, router.external, FailoverPolicy()).health_status()).state
+            if state == "unavailable":
+                _log_llm_readiness_failure(
+                    failure_stage="unknown",
+                    failure_kind="unavailable",
+                    failure_reason_code="provider_reported_unavailable",
+                    exception_class=None,
+                    elapsed_ms=round((perf_counter() - started) * 1000),
+                    http_status=None,
+                )
+            return state
         provider = router.local if router.mode == "local_worker" else router.external
-        return "healthy" if provider is not None and await provider.health() else "unavailable"
-    except Exception:
+        state = "healthy" if provider is not None and await provider.health() else "unavailable"
+        if state == "unavailable":
+            diagnostic = getattr(provider, "last_health_failure", None)
+            _log_llm_readiness_failure(
+                failure_stage=getattr(diagnostic, "failure_stage", "unknown"),
+                failure_kind=getattr(diagnostic, "failure_kind", "unavailable"),
+                failure_reason_code=getattr(diagnostic, "failure_reason_code", "provider_reported_unavailable"),
+                exception_class=getattr(diagnostic, "exception_class", None),
+                elapsed_ms=round((perf_counter() - started) * 1000),
+                http_status=getattr(diagnostic, "http_status", None),
+            )
+        return state
+    except Exception as exc:
+        diagnostic = getattr(provider, "last_health_failure", None)
+        _log_llm_readiness_failure(
+            failure_stage=getattr(diagnostic, "failure_stage", "unknown"),
+            failure_kind=getattr(diagnostic, "failure_kind", "exception"),
+            failure_reason_code=getattr(diagnostic, "failure_reason_code", "provider_exception"),
+            exception_class=getattr(diagnostic, "exception_class", type(exc).__name__),
+            elapsed_ms=round((perf_counter() - started) * 1000),
+            http_status=getattr(diagnostic, "http_status", None),
+        )
         return "unavailable"
     finally:
         if router.external is not None:
             await router.external.aclose()
         if router.local is not None:
             await router.local.aclose()
+
+
+def _log_llm_readiness_failure(
+    *,
+    failure_stage: str,
+    failure_kind: str,
+    failure_reason_code: str,
+    exception_class: str | None,
+    elapsed_ms: int,
+    http_status: int | None,
+) -> None:
+    logger.warning(
+        "event=llm_readiness_failure check_id=%s failure_stage=%s failure_kind=%s "
+        "failure_reason_code=%s exception_class=%s elapsed_ms=%s http_status=%s",
+        readiness_check_id.get() or "unknown",
+        failure_stage,
+        failure_kind,
+        failure_reason_code,
+        exception_class or "none",
+        elapsed_ms,
+        http_status if http_status is not None else "none",
+    )
 
 
 async def check_embedding_readiness() -> ReadinessState:
@@ -180,6 +248,8 @@ async def check_embedding_readiness() -> ReadinessState:
 
 
 async def readiness_report() -> dict[str, str]:
+    check_id = str(uuid4())
+    diagnostic_token = readiness_check_id.set(check_id)
     try:
         database, persona, llm, embedding = await asyncio.wait_for(
             asyncio.gather(
@@ -197,13 +267,17 @@ async def readiness_report() -> dict[str, str]:
             "persona": "unavailable",
             "llm": "unavailable",
             "embedding": "unavailable",
+            "check_id": check_id,
         }
+    finally:
+        readiness_check_id.reset(diagnostic_token)
 
     report = {
         "database": "ok" if database else "unavailable",
         "persona": "ok" if persona else "unavailable",
         "llm": llm,
         "embedding": embedding,
+        "check_id": check_id,
     }
     if not database or not persona or "unavailable" in {llm, embedding}:
         return {"status": "not_ready", **report}

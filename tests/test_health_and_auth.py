@@ -1,6 +1,8 @@
 import os
+import logging
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -10,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from apps.control_api import dependencies
 from apps.control_api.main import app
 from packages.persona.repository import PersonaRepository
+from packages.providers.external_openai import ExternalOpenAIProvider
 from packages.providers.router import ProviderRouter
 from packages.schemas.persona import PersonaPackage
 
@@ -92,6 +95,166 @@ def test_health_ready_is_anonymous_and_redacts_failures(monkeypatch) -> None:
     assert response.status_code == 503
     assert response.json()["status"] == "not_ready"
     assert "super-secret-token" not in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "expected_kind"),
+    [(401, "authentication"), (403, "authentication"), (429, "rate_limit"), (500, "unavailable"), (502, "unavailable"), (503, "unavailable")],
+)
+async def test_llm_readiness_logs_safe_http_failure_diagnostics(monkeypatch, caplog, status_code, expected_kind) -> None:
+    provider = ExternalOpenAIProvider(
+        base_url="https://user:password@example.invalid/v1",
+        api_key="SUPER_SECRET",
+        model_id="test-model",
+        max_retries=0,
+        transport=httpx.MockTransport(lambda request: httpx.Response(status_code)),
+    )
+    monkeypatch.setattr(
+        dependencies,
+        "create_provider_router",
+        lambda: ProviderRouter(external=provider, mode="cloud"),
+    )
+    with caplog.at_level(logging.WARNING, logger="apps.control_api.dependencies"):
+        assert await dependencies.check_llm_readiness() == "unavailable"
+
+    message = caplog.messages[-1]
+    assert "event=llm_readiness_failure" in message
+    assert f"failure_kind={expected_kind}" in message
+    assert f"http_status={status_code}" in message
+    assert "SUPER_SECRET" not in message
+    assert "user:password" not in message
+
+
+@pytest.mark.asyncio
+async def test_llm_readiness_logs_timeout_and_connection_without_secret_leakage(monkeypatch, caplog) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("token=SUPER_SECRET https://user:password@example.invalid")
+
+    provider = ExternalOpenAIProvider(
+        base_url="https://user:password@example.invalid/v1",
+        api_key="SUPER_SECRET",
+        model_id="test-model",
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+    monkeypatch.setattr(
+        dependencies,
+        "create_provider_router",
+        lambda: ProviderRouter(external=provider, mode="cloud"),
+    )
+    with caplog.at_level(logging.WARNING, logger="apps.control_api.dependencies"):
+        assert await dependencies.check_llm_readiness() == "unavailable"
+
+    message = caplog.messages[-1]
+    assert "failure_kind=timeout" in message
+    assert "exception_class=ConnectTimeout" in message
+    assert "SUPER_SECRET" not in message
+    assert "user:password" not in message
+
+
+@pytest.mark.asyncio
+async def test_llm_readiness_logs_connection_failure_without_secret_leakage(monkeypatch, caplog) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("token=SUPER_SECRET https://user:password@example.invalid")
+
+    provider = ExternalOpenAIProvider(
+        base_url="https://user:password@example.invalid/v1",
+        api_key="SUPER_SECRET",
+        model_id="test-model",
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+    monkeypatch.setattr(
+        dependencies,
+        "create_provider_router",
+        lambda: ProviderRouter(external=provider, mode="cloud"),
+    )
+    with caplog.at_level(logging.WARNING, logger="apps.control_api.dependencies"):
+        assert await dependencies.check_llm_readiness() == "unavailable"
+
+    message = caplog.messages[-1]
+    assert "failure_kind=connection" in message
+    assert "exception_class=ConnectError" in message
+    assert "SUPER_SECRET" not in message
+    assert "user:password" not in message
+
+
+def test_models_not_found_preserves_cloud_ready_http_200_with_one_probe(monkeypatch) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(404, content=b"not json")
+
+    provider = ExternalOpenAIProvider(
+        base_url="https://llm.example/v1",
+        api_key="secret",
+        model_id="test-model",
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+    monkeypatch.setattr(dependencies, "check_database_readiness", lambda: True)
+    monkeypatch.setattr(dependencies, "check_persona_readiness", lambda: True)
+    monkeypatch.setattr(dependencies, "check_embedding_readiness", lambda: asyncio_sleep_healthy())
+
+    monkeypatch.setattr(
+        dependencies,
+        "create_provider_router",
+        lambda: ProviderRouter(external=provider, mode="cloud"),
+    )
+
+    response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    assert response.json()["llm"] == "healthy"
+    assert response.json()["check_id"]
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_successful_models_probe_does_not_parse_response_body() -> None:
+    provider = ExternalOpenAIProvider(
+        base_url="https://llm.example/v1",
+        api_key="secret",
+        model_id="test-model",
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=b"not json")),
+    )
+
+    assert (await provider.health_status()).state == "healthy"
+    assert provider.last_health_failure is None
+    await provider.aclose()
+
+
+def test_ready_response_and_llm_failure_log_share_check_id(monkeypatch, caplog) -> None:
+    provider = ExternalOpenAIProvider(
+        base_url="https://llm.example/v1",
+        api_key="secret",
+        model_id="test-model",
+        max_retries=0,
+        transport=httpx.MockTransport(lambda request: httpx.Response(401)),
+    )
+    monkeypatch.setattr(dependencies, "check_database_readiness", lambda: True)
+    monkeypatch.setattr(dependencies, "check_persona_readiness", lambda: True)
+    monkeypatch.setattr(dependencies, "check_embedding_readiness", lambda: asyncio_sleep_healthy())
+    monkeypatch.setattr(
+        dependencies,
+        "create_provider_router",
+        lambda: ProviderRouter(external=provider, mode="cloud"),
+    )
+    with caplog.at_level(logging.WARNING, logger="apps.control_api.dependencies"):
+        response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 503
+    check_id = response.json()["check_id"]
+    assert check_id
+    assert f"check_id={check_id}" in caplog.messages[-1]
+
+
+async def asyncio_sleep_healthy() -> str:
+    return "healthy"
 
 
 @pytest.mark.asyncio

@@ -127,5 +127,8 @@ async def test_external_provider_health_supports_models_fallback_and_auth_failur
 
     assert (await degraded.health_status()).state == "degraded"
     assert (await unauthenticated.health_status()).state == "unavailable"
+    assert unauthenticated.last_health_failure is not None
+    assert unauthenticated.last_health_failure.http_status == 401
+    assert unauthenticated.last_health_failure.failure_kind == "authentication"
     await degraded.aclose()
     await unauthenticated.aclose()

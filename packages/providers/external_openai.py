@@ -1,6 +1,7 @@
 import json
 import random
 from asyncio import sleep
+from dataclasses import dataclass
 
 import httpx
 from pydantic import BaseModel, SecretStr, ValidationError
@@ -14,6 +15,15 @@ from packages.providers.base import (
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
+
+
+@dataclass(frozen=True)
+class HealthFailureDiagnostic:
+    failure_stage: str
+    failure_kind: str
+    failure_reason_code: str
+    exception_class: str
+    http_status: int | None
 
 
 class ExternalOpenAIProvider:
@@ -41,6 +51,7 @@ class ExternalOpenAIProvider:
         self.retry_base_delay = retry_base_delay
         self._client = client
         self._owns_client = client is None
+        self.last_health_failure: HealthFailureDiagnostic | None = None
 
     def _require_configuration(self) -> None:
         if self.base_url is None or self.api_key is None:
@@ -76,14 +87,18 @@ class ExternalOpenAIProvider:
             try:
                 response = await self._get_client().request(method, f"{self.base_url}{path}", **kwargs)
             except httpx.TimeoutException as exc:
-                raise ProviderTimeoutError("External LLM provider request timed out") from exc
+                error = ProviderTimeoutError("External LLM provider request timed out")
+                error.health_exception_class = type(exc).__name__
+                raise error from exc
             except httpx.RequestError as exc:
                 error = ProviderUnavailableError("External LLM provider network request failed")
+                error.health_exception_class = type(exc).__name__
                 retryable = True
             else:
                 if response.is_success or response.status_code in (allowed_statuses or set()):
                     return response
                 error = self._error_for_status(response.status_code)
+                error.health_http_status = response.status_code
                 retryable = response.status_code in {429, 502, 503, 504}
             if not retryable or retries >= self.max_retries:
                 raise error
@@ -93,7 +108,43 @@ class ExternalOpenAIProvider:
     async def health(self) -> bool:
         return (await self.health_status()).is_healthy
 
+    def _record_health_failure(self, exc: Exception) -> None:
+        http_status = getattr(exc, "health_http_status", None)
+        exception_class = getattr(exc, "health_exception_class", type(exc).__name__)
+        if http_status in {401, 403}:
+            kind, reason = "authentication", "provider_authentication_failed"
+        elif http_status == 429:
+            kind, reason = "rate_limit", "provider_rate_limited"
+        elif http_status in {408, 504}:
+            kind, reason = "timeout", "provider_request_timeout"
+        elif http_status in {500, 502, 503}:
+            kind, reason = "unavailable", "provider_server_error"
+        elif http_status is not None:
+            kind, reason = "response", "provider_unexpected_response"
+        elif isinstance(exc, ProviderConfigurationError):
+            kind, reason = "configuration", "provider_not_configured"
+        elif isinstance(exc, ProviderAuthenticationError):
+            kind, reason = "authentication", "provider_authentication_failed"
+        elif isinstance(exc, ProviderRateLimitError):
+            kind, reason = "rate_limit", "provider_rate_limited"
+        elif isinstance(exc, ProviderTimeoutError):
+            kind, reason = "timeout", "provider_request_timeout"
+        elif isinstance(exc, ProviderUnavailableError):
+            kind, reason = "connection", "provider_network_error"
+        elif isinstance(exc, ProviderResponseError):
+            kind, reason = "response", "provider_unexpected_response"
+        else:
+            kind, reason = "unknown", "provider_exception"
+        self.last_health_failure = HealthFailureDiagnostic(
+            failure_stage="classify_response" if http_status is not None else "request_models",
+            failure_kind=kind,
+            failure_reason_code=reason,
+            exception_class=exception_class,
+            http_status=http_status,
+        )
+
     async def health_status(self) -> ProviderHealth:
+        self.last_health_failure = None
         try:
             response = await self._request(
                 "GET",
@@ -101,12 +152,18 @@ class ExternalOpenAIProvider:
                 allowed_statuses={404},
                 headers={"Authorization": f"Bearer {self.api_key}"},
             )
-        except ProviderConfigurationError:
+        except ProviderConfigurationError as exc:
+            self._record_health_failure(exc)
             return ProviderHealth("unavailable", "not configured")
-        except ProviderAuthenticationError:
+        except ProviderAuthenticationError as exc:
+            self._record_health_failure(exc)
             return ProviderHealth("unavailable", "authentication failed")
-        except ProviderUnavailableError:
+        except ProviderUnavailableError as exc:
+            self._record_health_failure(exc)
             return ProviderHealth("unavailable", "endpoint unavailable")
+        except Exception as exc:
+            self._record_health_failure(exc)
+            raise
         if response.status_code == 404:
             return ProviderHealth("degraded", "lightweight health endpoint unsupported")
         return ProviderHealth("healthy", "models endpoint reachable")
