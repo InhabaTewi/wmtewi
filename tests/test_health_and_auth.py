@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from apps.control_api import dependencies
@@ -179,6 +180,146 @@ def test_reconstructed_llm_degraded_readiness_remains_http_200(monkeypatch) -> N
     UUID(response.json()["check_id"])
 
 
+class DatabaseConnection:
+    def __init__(self, responses: list[object]) -> None:
+        self.responses = iter(responses)
+        self.scalar_calls = 0
+
+    def scalar(self, _):
+        self.scalar_calls += 1
+        response = next(self.responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return None
+
+
+class DatabaseEngine:
+    def __init__(self, connection: DatabaseConnection | Exception) -> None:
+        self.connection = connection
+        self.connect_calls = 0
+
+    def connect(self):
+        self.connect_calls += 1
+        if isinstance(self.connection, Exception):
+            raise self.connection
+        return self.connection
+
+
+def _healthy_readiness_dependencies(monkeypatch) -> None:
+    async def healthy():
+        return "healthy"
+
+    monkeypatch.setattr(dependencies, "check_persona_readiness", lambda: True)
+    monkeypatch.setattr(dependencies, "check_llm_readiness", healthy)
+    monkeypatch.setattr(dependencies, "check_embedding_readiness", healthy)
+
+
+@pytest.mark.parametrize(
+    ("engine", "expected_stage", "expected_exception", "expected_reason"),
+    [
+        (
+            DatabaseEngine(OperationalError("SELECT 1", {}, RuntimeError("connect failed"))),
+            "acquire_connection",
+            "OperationalError",
+            "exception",
+        ),
+        (
+            DatabaseEngine(DatabaseConnection([OperationalError("SELECT 1", {}, RuntimeError("query failed"))])),
+            "select_one",
+            "OperationalError",
+            "exception",
+        ),
+        (
+            DatabaseEngine(DatabaseConnection([1, OperationalError("SELECT 1", {}, RuntimeError("extension failed"))])),
+            "pgvector_check",
+            "OperationalError",
+            "exception",
+        ),
+        (
+            DatabaseEngine(DatabaseConnection([1, 1, OperationalError("SELECT 1", {}, RuntimeError("revision failed"))])),
+            "alembic_revision_check",
+            "OperationalError",
+            "exception",
+        ),
+    ],
+)
+def test_database_readiness_exception_diagnostics_preserve_stage_and_check_id(
+    monkeypatch, caplog, engine, expected_stage, expected_exception, expected_reason
+) -> None:
+    _healthy_readiness_dependencies(monkeypatch)
+    monkeypatch.setattr(dependencies, "engine", engine)
+
+    with caplog.at_level("WARNING", logger="apps.control_api.dependencies"):
+        response = TestClient(app).get("/health/ready")
+
+    payload = response.json()
+    assert response.status_code == 503
+    assert payload["database"] == "unavailable"
+    assert payload["failure_component"] == "database"
+    assert engine.connect_calls == 1
+    assert f"event=db_readiness_failure check_id={payload['check_id']}" in caplog.text
+    assert f"failure_stage={expected_stage}" in caplog.text
+    assert f"failure_reason_code={expected_reason}" in caplog.text
+    assert f"exception_class={expected_exception}" in caplog.text
+    assert "exception_family=OperationalError" in caplog.text
+    assert "connection_invalidated=false" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("responses", "expected_stage", "expected_reason"),
+    [
+        ([None], "select_one", "invalid_select_result"),
+        ([1, None], "pgvector_check", "pgvector_not_ready"),
+        ([1, 1, "outdated-revision"], "alembic_revision_check", "revision_mismatch"),
+    ],
+)
+def test_database_readiness_validation_diagnostics_preserve_stage_without_exception(
+    monkeypatch, caplog, responses, expected_stage, expected_reason
+) -> None:
+    _healthy_readiness_dependencies(monkeypatch)
+    engine = DatabaseEngine(DatabaseConnection(responses))
+    monkeypatch.setattr(dependencies, "engine", engine)
+    monkeypatch.setattr(dependencies, "_expected_alembic_revision", lambda: "current-revision")
+
+    with caplog.at_level("WARNING", logger="apps.control_api.dependencies"):
+        response = TestClient(app).get("/health/ready")
+
+    payload = response.json()
+    assert response.status_code == 503
+    assert engine.connect_calls == 1
+    assert engine.connection.scalar_calls == len(responses)
+    assert f"check_id={payload['check_id']}" in caplog.text
+    assert f"failure_stage={expected_stage}" in caplog.text
+    assert f"failure_reason_code={expected_reason}" in caplog.text
+    assert "exception_class=NONE" in caplog.text
+
+
+def test_database_readiness_diagnostic_logs_redact_exception_messages(monkeypatch, caplog) -> None:
+    secret = "postgresql://user:SUPER_SECRET@db/internal password=SUPER_SECRET"
+    _healthy_readiness_dependencies(monkeypatch)
+    monkeypatch.setattr(
+        dependencies,
+        "engine",
+        DatabaseEngine(OperationalError("SELECT 1", {}, RuntimeError(secret))),
+    )
+
+    with caplog.at_level("WARNING", logger="apps.control_api.dependencies"):
+        response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 503
+    assert "exception_class=OperationalError" in caplog.text
+    assert "SUPER_SECRET" not in response.text
+    assert "SUPER_SECRET" not in caplog.text
+    assert "postgresql://" not in caplog.text
+    assert "password=" not in caplog.text
+
+
 @pytest.mark.parametrize("failed_check", ["persona", "llm", "embedding"])
 def test_readiness_marks_required_dependency_unavailable(monkeypatch, failed_check: str) -> None:
     async def healthy():
@@ -223,7 +364,7 @@ def test_database_readiness_requires_pgvector_and_current_revision(
         def __enter__(self):
             return self
 
-        def __exit__(self, *_args):
+        def __exit__(self, *_):
             return None
 
     monkeypatch.setattr(dependencies, "engine", SimpleNamespace(connect=Connection))
