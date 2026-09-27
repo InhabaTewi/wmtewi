@@ -1,5 +1,6 @@
 import os
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -150,13 +151,82 @@ def test_readiness_state_requires_database_persona_and_all_providers(monkeypatch
     monkeypatch.setattr(dependencies, "check_llm_readiness", healthy)
     monkeypatch.setattr(dependencies, "check_embedding_readiness", healthy)
 
-    assert TestClient(app).get("/health/ready").json()["status"] == "ready"
+    ready = TestClient(app).get("/health/ready").json()
+    assert ready["status"] == "ready"
+    UUID(ready["check_id"])
 
     monkeypatch.setattr(dependencies, "check_embedding_readiness", healthy)
     monkeypatch.setattr(dependencies, "check_database_readiness", lambda: False)
     response = TestClient(app).get("/health/ready")
     assert response.status_code == 503
     assert response.json()["database"] == "unavailable"
+
+
+def test_reconstructed_readiness_diagnostics_correlate_failure_without_secrets(monkeypatch, caplog) -> None:
+    async def healthy():
+        return "healthy"
+
+    monkeypatch.setattr(dependencies, "check_database_readiness", lambda: False)
+    monkeypatch.setattr(dependencies, "check_persona_readiness", lambda: True)
+    monkeypatch.setattr(dependencies, "check_llm_readiness", healthy)
+    monkeypatch.setattr(dependencies, "check_embedding_readiness", healthy)
+
+    with caplog.at_level("WARNING", logger="apps.control_api.dependencies"):
+        response = TestClient(app).get("/health/ready")
+
+    payload = response.json()
+    assert response.status_code == 503
+    assert payload["failure_component"] == "database"
+    UUID(payload["check_id"])
+    assert f"check_id={payload['check_id']}" in caplog.text
+    assert "failure_kind=unavailable" in caplog.text
+    assert "database_ms=" in caplog.text
+    assert "exception_types=none" in caplog.text
+
+
+def test_reconstructed_readiness_diagnostics_redact_exception_messages(monkeypatch, caplog) -> None:
+    secret = "postgresql://user:password@example/db?token=SECRET"
+
+    def database_failure() -> bool:
+        raise RuntimeError(secret)
+
+    async def healthy():
+        return "healthy"
+
+    monkeypatch.setattr(dependencies, "check_database_readiness", database_failure)
+    monkeypatch.setattr(dependencies, "check_persona_readiness", lambda: True)
+    monkeypatch.setattr(dependencies, "check_llm_readiness", healthy)
+    monkeypatch.setattr(dependencies, "check_embedding_readiness", healthy)
+
+    with caplog.at_level("WARNING", logger="apps.control_api.dependencies"):
+        response = TestClient(app).get("/health/ready")
+
+    payload = response.json()
+    assert response.status_code == 503
+    assert payload["failure_component"] == "database"
+    UUID(payload["check_id"])
+    assert "exception_types=database:RuntimeError" in caplog.text
+    assert secret not in response.text
+    assert secret not in caplog.text
+
+
+def test_reconstructed_llm_degraded_readiness_remains_http_200(monkeypatch) -> None:
+    async def healthy():
+        return "healthy"
+
+    async def degraded():
+        return "degraded"
+
+    monkeypatch.setattr(dependencies, "check_database_readiness", lambda: True)
+    monkeypatch.setattr(dependencies, "check_persona_readiness", lambda: True)
+    monkeypatch.setattr(dependencies, "check_llm_readiness", degraded)
+    monkeypatch.setattr(dependencies, "check_embedding_readiness", healthy)
+
+    response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "degraded"
+    UUID(response.json()["check_id"])
 
 
 @pytest.mark.parametrize("failed_check", ["persona", "llm", "embedding"])
@@ -242,7 +312,9 @@ def test_ready_endpoint_checks_real_postgresql_state(monkeypatch) -> None:
         engine.dispose()
 
     assert response.status_code == 200
-    assert response.json() == {
+    payload = response.json()
+    UUID(payload.pop("check_id"))
+    assert payload == {
         "status": "ready",
         "database": "ok",
         "persona": "ok",
