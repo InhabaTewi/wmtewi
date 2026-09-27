@@ -2,6 +2,7 @@ import asyncio
 import logging
 import secrets
 from collections.abc import AsyncGenerator, Awaitable, Generator
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -12,6 +13,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from fastapi import Depends
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError, IntegrityError, InterfaceError, InvalidRequestError, OperationalError, TimeoutError
 from sqlalchemy.orm import Session, sessionmaker
 
 from packages.persistence.config import settings
@@ -25,6 +27,14 @@ from packages.providers.local_cloud_fallback import PreferLocalWithCloudFallback
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ReadinessState = Literal["healthy", "degraded", "unavailable"]
 ReadinessFailureKind = Literal["none", "degraded", "timeout", "unavailable", "exception"]
+DatabaseReadinessStage = Literal[
+    "acquire_connection",
+    "select_one",
+    "pgvector_check",
+    "alembic_revision_check",
+    "release_connection",
+    "unknown",
+]
 logger = logging.getLogger(__name__)
 
 
@@ -34,6 +44,19 @@ class ReadinessComponent:
     elapsed_ms: int
     failure_kind: ReadinessFailureKind
     exception_type: str | None = None
+
+
+@dataclass
+class DatabaseReadinessDiagnostic:
+    check_id: str
+    stage: DatabaseReadinessStage = "unknown"
+    stage_started: float = 0.0
+
+
+database_readiness_diagnostic: ContextVar[DatabaseReadinessDiagnostic | None] = ContextVar(
+    "database_readiness_diagnostic",
+    default=None,
+)
 
 
 def database_engine_options(database_url: str) -> dict:
@@ -146,15 +169,116 @@ def _expected_alembic_revision() -> str:
     return ScriptDirectory.from_config(config).get_current_head()
 
 
-def check_database_readiness() -> bool:
+def _database_exception_family(exc: Exception) -> str:
+    if isinstance(exc, TimeoutError):
+        return "TimeoutError"
+    if isinstance(exc, IntegrityError):
+        return "IntegrityError"
+    if isinstance(exc, OperationalError):
+        return "OperationalError"
+    if isinstance(exc, InterfaceError):
+        return "InterfaceError"
+    if isinstance(exc, DBAPIError):
+        return "DBAPIError"
+    if isinstance(exc, InvalidRequestError):
+        return "InvalidRequestError"
+    return "other"
+
+
+def _database_pool_metadata() -> dict[str, int] | None:
     try:
-        with engine.connect() as connection:
-            if connection.scalar(text("SELECT 1")) != 1:
-                return False
-            if connection.scalar(text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")) != 1:
-                return False
-            return connection.scalar(text("SELECT version_num FROM alembic_version")) == _expected_alembic_revision()
+        pool = engine.pool
+        return {
+            "pool_size": pool.size(),
+            "checked_in": pool.checkedin(),
+            "checked_out": pool.checkedout(),
+            "overflow": pool.overflow(),
+        }
     except Exception:
+        return None
+
+
+def _log_database_readiness_failure(
+    diagnostic: DatabaseReadinessDiagnostic | None,
+    *,
+    failure_reason_code: str,
+    exc: Exception | None = None,
+    started: float,
+) -> None:
+    check_id = diagnostic.check_id if diagnostic is not None else "none"
+    stage = diagnostic.stage if diagnostic is not None else "unknown"
+    stage_started = diagnostic.stage_started if diagnostic is not None else started
+    exception_class = type(exc).__name__ if exc is not None else "NONE"
+    exception_family = _database_exception_family(exc) if exc is not None else "none"
+    connection_invalidated = (
+        str(bool(exc.connection_invalidated)).lower() if isinstance(exc, DBAPIError) else "not_available"
+    )
+    pool = _database_pool_metadata()
+    logger.warning(
+        "event=db_readiness_failure check_id=%s failure_stage=%s failure_kind=%s "
+        "failure_reason_code=%s exception_class=%s exception_family=%s connection_invalidated=%s "
+        "db_total_ms=%s stage_elapsed_ms=%s pool_size=%s checked_in=%s checked_out=%s overflow=%s",
+        check_id,
+        stage,
+        "timeout" if isinstance(exc, TimeoutError) else "connection_error" if isinstance(exc, DBAPIError) else "unavailable",
+        failure_reason_code,
+        exception_class,
+        exception_family,
+        connection_invalidated,
+        round((perf_counter() - started) * 1000),
+        round((perf_counter() - stage_started) * 1000),
+        pool["pool_size"] if pool is not None else "not_collected",
+        pool["checked_in"] if pool is not None else "not_collected",
+        pool["checked_out"] if pool is not None else "not_collected",
+        pool["overflow"] if pool is not None else "not_collected",
+    )
+
+
+def check_database_readiness() -> bool:
+    started = perf_counter()
+    diagnostic = database_readiness_diagnostic.get()
+
+    def set_stage(stage: DatabaseReadinessStage) -> None:
+        if diagnostic is not None:
+            diagnostic.stage = stage
+            diagnostic.stage_started = perf_counter()
+
+    try:
+        set_stage("acquire_connection")
+        with engine.connect() as connection:
+            set_stage("select_one")
+            if connection.scalar(text("SELECT 1")) != 1:
+                _log_database_readiness_failure(
+                    diagnostic,
+                    failure_reason_code="invalid_select_result",
+                    started=started,
+                )
+                return False
+            set_stage("pgvector_check")
+            if connection.scalar(text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")) != 1:
+                _log_database_readiness_failure(
+                    diagnostic,
+                    failure_reason_code="pgvector_not_ready",
+                    started=started,
+                )
+                return False
+            set_stage("alembic_revision_check")
+            if connection.scalar(text("SELECT version_num FROM alembic_version")) != _expected_alembic_revision():
+                _log_database_readiness_failure(
+                    diagnostic,
+                    failure_reason_code="revision_mismatch",
+                    started=started,
+                )
+                return False
+            set_stage("release_connection")
+            return True
+    except Exception as exc:
+        _log_database_readiness_failure(
+            diagnostic,
+            failure_reason_code="exception",
+            exc=exc,
+            started=started,
+        )
         return False
 
 
@@ -280,6 +404,7 @@ async def readiness_report() -> dict[str, str]:
     check_id = str(uuid4())
     started = perf_counter()
     components: dict[str, ReadinessComponent] = {}
+    diagnostic_token = database_readiness_diagnostic.set(DatabaseReadinessDiagnostic(check_id=check_id))
     try:
         database, persona, llm, embedding = await asyncio.wait_for(
             asyncio.gather(
@@ -301,6 +426,8 @@ async def readiness_report() -> dict[str, str]:
         report["failure_component"] = failed[0] if failed else "unknown"
         _log_readiness_failure(check_id, report, components, round((perf_counter() - started) * 1000), "exception")
         return report
+    finally:
+        database_readiness_diagnostic.reset(diagnostic_token)
 
     report = {
         "database": "ok" if database else "unavailable",
